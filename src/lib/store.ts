@@ -20,11 +20,21 @@ export function withLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function readJson<T>(filePath: string, fallback: T): Promise<T> {
+  let text: string;
   try {
-    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
+    text = await fs.readFile(filePath, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return fallback;
     throw err;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // Unreadable (e.g. zero-filled after a power loss). Set it aside rather than break the app.
+    const backup = `${filePath}.corrupt-${Date.now()}`;
+    await fs.rename(filePath, backup).catch(() => undefined);
+    console.warn(`Couldn't read ${filePath}; moved it to ${backup} and started fresh.`);
+    return fallback;
   }
 }
 
@@ -32,7 +42,14 @@ async function writeJson(filePath: string, data: unknown): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const body = JSON.stringify(data, null, 2);
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, body, "utf8");
+  // Flush to disk before swapping the file in, so sleep or power loss can't leave a half-written file.
+  const handle = await fs.open(tmp, "w");
+  try {
+    await handle.writeFile(body, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   try {
     await fs.rename(tmp, filePath);
   } catch {

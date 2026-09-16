@@ -10,7 +10,9 @@ export async function embed(texts: string[], kind: "query" | "document"): Promis
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: config.ollama.embedModel, input: texts.map((t) => `search_${kind}: ${t}`) }),
-      signal: AbortSignal.timeout(8_000),
+      // Storing mistakes happens in the background and may wait for Ollama to load the model;
+      // recall happens while the student waits, so it gives up quickly.
+      signal: AbortSignal.timeout(kind === "document" ? 60_000 : 5_000),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { embeddings?: number[][] };

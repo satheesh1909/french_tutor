@@ -43,7 +43,13 @@ async function speakWithGemini(segments: SpeechSegment[], level: LevelRef, signa
 
   const ctx = new AudioContext();
   let raf = 0;
+  let safety: ReturnType<typeof setTimeout> | undefined;
   try {
+    // Browsers may hold audio until the page has been interacted with; don't wait forever for that.
+    if (ctx.state !== "running") {
+      await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 1500))]);
+      if ((ctx.state as AudioContextState) !== "running") throw new Error("Audio playback is blocked by the browser.");
+    }
     const buffer = await ctx.decodeAudioData(audio);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -58,16 +64,23 @@ async function speakWithGemini(segments: SpeechSegment[], level: LevelRef, signa
       raf = requestAnimationFrame(meter);
     };
     await new Promise<void>((resolve) => {
-      const onAbort = () => source.stop();
-      signal.addEventListener("abort", onAbort, { once: true });
-      source.onended = () => {
+      const finish = () => {
         signal.removeEventListener("abort", onAbort);
         resolve();
       };
+      const onAbort = () => {
+        source.stop();
+        finish();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      source.onended = finish;
+      // If the audio device stalls, "ended" may never fire; don't leave the tutor stuck on "Speaking".
+      safety = setTimeout(finish, (buffer.duration + 2) * 1000);
       source.start();
       meter();
     });
   } finally {
+    clearTimeout(safety);
     cancelAnimationFrame(raf);
     level.current = 0;
     await ctx.close();
@@ -123,11 +136,15 @@ async function speakWithBrowser(segments: SpeechSegment[], level: LevelRef, sign
         const voice = pickVoice(voices, segment.lang);
         if (voice) utterance.voice = voice;
         utterance.rate = segment.lang === "fr" ? 0.92 : 1;
+        // Speech synthesis can silently never start (e.g. before any page interaction); cap the wait.
+        const safety = setTimeout(() => done(), 3000 + segment.text.length * 120);
         const cancel = () => {
+          clearTimeout(safety);
           synth.cancel();
           resolve();
         };
         const done = () => {
+          clearTimeout(safety);
           signal.removeEventListener("abort", cancel);
           resolve();
         };
