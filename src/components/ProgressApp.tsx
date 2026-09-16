@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   CATEGORY_LABELS,
@@ -12,6 +13,7 @@ import {
   type MistakeRecord,
   type SessionSummary,
 } from "@/lib/types";
+import { PACE_GUIDE, type FluencyAverage } from "@/lib/fluency";
 import { api, errorMessage } from "./api";
 import { formatDate } from "./format";
 
@@ -22,6 +24,7 @@ interface ProgressData {
   topMistakes: MistakeRecord[];
   mistakeCount: number;
   cards: { total: number; due: number; mature: number };
+  speaking: Record<"today" | "week" | "previousWeek" | "month" | "allTime", FluencyAverage | null>;
 }
 
 export function ProgressApp() {
@@ -87,6 +90,8 @@ export function ProgressApp() {
         )}
       </section>
 
+      <SpeakingPanel speaking={data.speaking} />
+
       <section className="panel">
         <h2 className="section-title">Mistakes &amp; review</h2>
         <div className="stats">
@@ -147,12 +152,15 @@ export function ProgressApp() {
                         {scenario ? ` · ${scenario.title}` : s.topic ? ` · ${s.topic}` : ""}
                       </strong>
                       <span className="muted small">
-                        {s.turnCount} turns · {s.correctionCount} corrections{s.review ? ` · ${s.review.levels.overall}` : ""}
+                        {s.turnCount} turns · {s.correctionCount} corrections
+                        {s.fluency ? ` · ${s.fluency.wpm} wpm` : ""}
+                        {s.review ? ` · ${s.review.levels.overall}` : ""}
                       </span>
                     </summary>
                     {s.review ? (
                       <div className="session-review">
                         <p>{s.review.summary}</p>
+                        {s.review.fluencyNote && <p className="small">{s.review.fluencyNote}</p>}
                         <ul className="bullets">
                           {s.review.focusAreas.map((f) => (
                             <li key={f}>{f}</li>
@@ -178,12 +186,73 @@ export function ProgressApp() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value, detail }: { label: string; value: number | string; detail?: string }) {
   return (
     <div className="stat">
       <strong>{value}</strong>
       <span>{label}</span>
+      {detail && <span className="stat__detail">{detail}</span>}
     </div>
+  );
+}
+
+function SpeakingPanel({ speaking }: { speaking: ProgressData["speaking"] }) {
+  const { week, previousWeek, month, allTime, today } = speaking;
+  const change = week && previousWeek ? week.wpm - previousWeek.wpm : null;
+  const periods: [string, FluencyAverage | null][] = [
+    ["Today", today],
+    ["Last 7 days", week],
+    ["This month", month],
+    ["All time", allTime],
+  ];
+
+  return (
+    <section className="panel">
+      <h2 className="section-title">Speaking speed</h2>
+      {!allTime ? (
+        <p className="muted">No spoken answers measured yet. Use the microphone in a session and your speaking speed is tracked automatically.</p>
+      ) : (
+        <>
+          <div className="stats">
+            <Stat
+              label="words per minute, last 7 days"
+              value={week ? week.wpm : "–"}
+              detail={change === null ? undefined : `${change >= 0 ? "▲" : "▼"} ${Math.abs(change)} vs the week before`}
+            />
+            <Stat label="wpm while talking (no pauses)" value={week ? week.articulationWpm : "–"} />
+            <Stat label="pauses per minute" value={week ? week.pausesPerMinute : "–"} />
+          </div>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Period</th>
+                  <th className="num">Answers</th>
+                  <th className="num">Words / min</th>
+                  <th className="num">While talking</th>
+                  <th className="num">Pauses / min</th>
+                </tr>
+              </thead>
+              <tbody>
+                {periods.map(([label, avg]) => (
+                  <tr key={label}>
+                    <td>{label}</td>
+                    <td className="num">{avg?.turns ?? 0}</td>
+                    <td className="num">{avg?.wpm ?? "–"}</td>
+                    <td className="num">{avg?.articulationWpm ?? "–"}</td>
+                    <td className="num">{avg?.pausesPerMinute ?? "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <p className="small muted">
+        Rough conversational pace: {PACE_GUIDE.map((p) => `${p.level} ${p.range}`).join(" · ")} words per minute. People vary a lot, so watch your own
+        trend. Fewer, shorter pauses usually matter more than raw speed.
+      </p>
+    </section>
   );
 }
 
@@ -263,13 +332,9 @@ function ProfileForm({ profile, onSaved }: { profile: LearnerProfile; onSaved: (
           </span>
         </label>
       </fieldset>
-      <label className="field">
-        <span>Tutor voice</span>
-        <select className="input" value={form.voice} onChange={(e) => set("voice", e.target.value as LearnerProfile["voice"])}>
-          <option value="gemini">Gemini: natural, needs a Gemini key</option>
-          <option value="browser">Browser: free and instant, more robotic</option>
-        </select>
-      </label>
+      <p className="small muted">
+        Voice and AI model choices are on the <Link href="/settings">Settings</Link> page.
+      </p>
       <div className="row">
         <button className="btn btn--primary" disabled={saving}>
           {saving ? "Saving…" : "Save settings"}

@@ -953,6 +953,266 @@ kbd {
   margin-top: 4px;
 }
 
+/* ---------- Settings ---------- */
+.brain-tag {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.brain-tag a,
+.small a {
+  color: var(--accent);
+}
+code {
+  font: 12.5px ui-monospace, "Cascadia Code", Consolas, monospace;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+}
+.settings {
+  max-width: 900px;
+  margin: 0 auto;
+  display: grid;
+  gap: 16px;
+  padding-bottom: 72px;
+}
+.settings__head {
+  display: grid;
+  gap: 4px;
+}
+.settings__head h1 {
+  font-size: 24px;
+}
+.panel__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.panel > * + * {
+  margin-top: 12px;
+}
+.panel > .section-title + * {
+  margin-top: 0;
+}
+.connections {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+.connection {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.connection div {
+  display: grid;
+}
+.connection__dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--rose);
+}
+.connection--ok .connection__dot {
+  background: var(--green);
+}
+.jobs {
+  display: grid;
+}
+.job {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.job:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.job__label {
+  display: grid;
+}
+.job__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.job__controls > select.input {
+  flex: 1 1 220px;
+  width: auto;
+  min-width: 0;
+}
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tag {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.inline-field .input {
+  width: auto;
+}
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.warn {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+.choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+.choice {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+.choice span {
+  font-size: 13px;
+  color: var(--muted);
+}
+.choice[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.choice:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.usage-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+}
+.usage-card {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.usage-card > strong {
+  font-size: 30px;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.usage-card__split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 6px 0 0;
+  font-size: 12.5px;
+}
+.usage-card__split dt {
+  color: var(--muted);
+}
+.usage-card__split dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.table th,
+.table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.table th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.speed {
+  display: grid;
+  gap: 6px;
+}
+.speed__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.speed__stats div {
+  display: grid;
+  justify-items: center;
+  padding: 8px 4px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  text-align: center;
+}
+.speed__stats strong {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.speed__stats span,
+.stat__detail {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.stat__detail {
+  color: var(--accent);
+}
+.savebar {
+  position: sticky;
+  bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
 @media (max-width: 520px) {
   .grades {
     grid-template-columns: repeat(2, 1fr);

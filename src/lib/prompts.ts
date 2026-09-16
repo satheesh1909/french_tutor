@@ -1,4 +1,5 @@
 import { config } from "./config";
+import { averageFluency } from "./fluency";
 import type { RecalledMistakes } from "./learner";
 import {
   CATEGORY_LABELS,
@@ -126,7 +127,20 @@ Guidelines:
 - Quote the student's own words when you name strengths and focus areas.
 - focusAreas: the two to four most valuable things to work on next, ordered by impact and phrased as actionable goals, e.g. "Use être with movement verbs in the passé composé (je suis allé, not j'ai allé)".
 - nextSessionPlan: a concrete two- or three-sentence plan (activity, grammar target, vocabulary theme).
-- Write summary, levelNotes, nextSessionPlan and focusAreas in English, with French examples. encouragement is one or two warm sentences in the tutor's voice.`;
+- Write summary, levelNotes, nextSessionPlan and focusAreas in English, with French examples. encouragement is one or two warm sentences in the tutor's voice.
+- fluencyNote: one or two sentences on speaking pace and pauses, based on the measured figures if any are given (otherwise say speed wasn't measured because nothing was spoken). As a rough guide, conversational pace is often about 60–90 words per minute at A2, 90–120 at B1, 110–140 at B2 and 150+ for native speakers, but individuals vary a lot: comment on trends and pauses, and don't judge the level on speed alone.`;
+
+function speedSummary(session: Session): string {
+  const spoken = session.turns.flatMap((t) => (t.fluency ? [t.fluency] : []));
+  const avg = averageFluency(spoken);
+  if (!avg) return "Speaking speed: not measured this session (no spoken turns long enough to time).";
+  const perTurn = spoken
+    .filter((f) => f.reliable)
+    .map((f) => `${f.wpm} wpm (${f.words} words, ${f.pauses} pauses)`)
+    .join("; ");
+  return `Measured speaking speed this session (${avg.turns} spoken turns): ${avg.wpm} words per minute overall, ${avg.articulationWpm} excluding pauses, ${avg.pausesPerMinute} pauses of 0.4 s or more per minute.
+Per turn: ${perTurn}`;
+}
 
 export function reviewInput(profile: LearnerProfile, session: Session): string {
   const transcript = session.turns
@@ -150,6 +164,8 @@ export function reviewInput(profile: LearnerProfile, session: Session): string {
 - Goals: ${profile.goals || "not stated"}
 
 Session activity: ${activity(session)}
+
+${speedSummary(session)}
 
 <transcript>
 ${transcript}

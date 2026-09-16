@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { checkAnswer, type AnswerResult } from "@/lib/answers";
 import type { Grade } from "@/lib/srs";
-import { CATEGORY_LABELS, type LearnerProfile, type QuizQuestion, type ReviewCard, type VoiceProvider } from "@/lib/types";
+import { CATEGORY_LABELS, type AppSettings, type QuizQuestion, type ReviewCard, type VoiceSettings } from "@/lib/types";
 import { api, errorMessage } from "./api";
 import { formatWhen } from "./format";
 import { speak } from "./voice";
@@ -16,18 +16,19 @@ const RESULT_TITLES: Record<AnswerResult, string> = {
 
 export function PracticeApp() {
   const [tab, setTab] = useState<"review" | "quiz">("review");
-  const [voice, setVoice] = useState<VoiceProvider>("gemini");
+  const [voice, setVoice] = useState<VoiceSettings | null>(null);
   const playing = useRef<AbortController | null>(null);
 
   useEffect(() => {
     api
-      .get<{ profile: LearnerProfile }>("/api/profile")
-      .then((r) => setVoice(r.profile.voice))
+      .get<{ settings: AppSettings }>("/api/settings?options=false")
+      .then((r) => setVoice(r.settings.voice))
       .catch(() => undefined);
   }, []);
 
   const listen = useCallback(
     (text: string) => {
+      if (!voice) return;
       playing.current?.abort();
       const controller = new AbortController();
       playing.current = controller;

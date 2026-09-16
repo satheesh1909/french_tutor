@@ -25,5 +25,8 @@ export const config = {
     url: process.env.OLLAMA_URL || "http://localhost:11434",
     embedModel: process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text",
   },
+  whisper: {
+    url: process.env.WHISPER_URL || "http://127.0.0.1:8765",
+  },
   dataDir: process.env.DATA_DIR || path.join(process.cwd(), "data"),
 };

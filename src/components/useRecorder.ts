@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import type { SpeechTiming } from "@/lib/fluency";
 import { rms, type LevelRef } from "./voice";
 
 const TARGET_SAMPLE_RATE = 16_000;
@@ -40,7 +41,7 @@ export function useRecorder(level: LevelRef) {
   }, [level]);
 
   /** Resolves to null when the clip is too short to be speech. */
-  const stop = useCallback(async (): Promise<Blob | null> => {
+  const stop = useCallback(async (): Promise<RecordedClip | null> => {
     const state = live.current;
     if (!state) return null;
     live.current = null;
@@ -60,7 +61,12 @@ export function useRecorder(level: LevelRef) {
   return { recording, start, stop, isRecording };
 }
 
-async function toWav(blob: Blob): Promise<Blob | null> {
+export interface RecordedClip {
+  wav: Blob;
+  timing: SpeechTiming;
+}
+
+async function toWav(blob: Blob): Promise<RecordedClip | null> {
   const ctx = new AudioContext();
   try {
     const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
@@ -71,10 +77,45 @@ async function toWav(blob: Blob): Promise<Blob | null> {
     source.connect(offline.destination);
     source.start();
     const rendered = await offline.startRendering();
-    return encodeWav(rendered.getChannelData(0), TARGET_SAMPLE_RATE);
+    const samples = rendered.getChannelData(0);
+    return { wav: encodeWav(samples, TARGET_SAMPLE_RATE), timing: speechTiming(samples, TARGET_SAMPLE_RATE) };
   } finally {
     await ctx.close();
   }
+}
+
+const FRAME_SEC = 0.02;
+
+/**
+ * Finds when the student was actually talking, from the loudness of 20 ms frames. Used to
+ * measure speaking speed when the local Whisper server (which gives exact word timings) isn't running.
+ */
+function speechTiming(samples: Float32Array, sampleRate: number): SpeechTiming {
+  const frame = Math.round(sampleRate * FRAME_SEC);
+  const energy: number[] = [];
+  for (let i = 0; i + frame <= samples.length; i += frame) {
+    let sum = 0;
+    for (let j = i; j < i + frame; j++) sum += samples[j] * samples[j];
+    energy.push(Math.sqrt(sum / frame));
+  }
+  const durationSec = samples.length / sampleRate;
+  // Speech is well above the room's background level (estimated from the quietest frames).
+  const floor = [...energy].sort((a, b) => a - b)[Math.floor(energy.length * 0.1)] ?? 0;
+  const threshold = Math.max(floor * 3, 0.015);
+
+  const runs: [number, number][] = [];
+  energy.forEach((e, i) => {
+    if (e <= threshold) return;
+    const last = runs.at(-1);
+    // Gaps under 150 ms are just consonants and breaths inside a phrase, not pauses.
+    if (last && i - last[1] <= Math.round(0.15 / FRAME_SEC)) last[1] = i;
+    else runs.push([i, i]);
+  });
+  const voiced = runs.filter(([a, b]) => (b - a + 1) * FRAME_SEC >= 0.1); // ignore clicks
+  if (voiced.length === 0) return { durationSec, startSec: 0, endSec: 0, pausesSec: [] };
+
+  const pausesSec = voiced.slice(1).map(([start], i) => (start - voiced[i][1] - 1) * FRAME_SEC);
+  return { durationSec, startSec: voiced[0][0] * FRAME_SEC, endSec: (voiced[voiced.length - 1][1] + 1) * FRAME_SEC, pausesSec };
 }
 
 function encodeWav(samples: Float32Array, sampleRate: number): Blob {

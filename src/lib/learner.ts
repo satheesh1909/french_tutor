@@ -1,5 +1,5 @@
 import { newCard } from "./srs";
-import { cosine, embed } from "./ollama";
+import { cosine, embed } from "./providers/ollama";
 import { readCards, readEmbeddings, readMistakes, withLock, writeCards, writeEmbeddings, writeMistakes } from "./store";
 import { CATEGORY_LABELS, type Correction, type MistakeRecord, type VocabItem } from "./types";
 

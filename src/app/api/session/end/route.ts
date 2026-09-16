@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { reviewSession } from "@/lib/claude";
+import { reviewSession } from "@/lib/brain";
 import { errorResponse } from "@/lib/http";
 import { readProfile, readSession, withLock, writeProfile, writeSession } from "@/lib/store";
 import { CEFR_LEVELS, type LearnerProfile } from "@/lib/types";

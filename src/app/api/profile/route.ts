@@ -26,7 +26,6 @@ export async function PUT(req: Request) {
         currentLevel: level(input.currentLevel, current.currentLevel),
         targetLevel: level(input.targetLevel, current.targetLevel),
         correctionStyle: input.correctionStyle === "gentle" || input.correctionStyle === "explicit" ? input.correctionStyle : current.correctionStyle,
-        voice: input.voice === "gemini" || input.voice === "browser" ? input.voice : current.voice,
         updatedAt: new Date().toISOString(),
       };
       await writeProfile(next);

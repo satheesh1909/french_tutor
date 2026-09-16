@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
-import type { LearnerProfile, MistakeRecord, ReviewCard, Session, SessionSummary } from "./types";
+import { averageFluency } from "./fluency";
+import type { AppSettings, LearnerProfile, MistakeRecord, ReviewCard, Session, SessionSummary, UsageTotals } from "./types";
 
 // Single-user app: plain JSON files in ./data are easy to inspect, back up, and edit by hand.
 
@@ -66,7 +67,6 @@ export function defaultProfile(): LearnerProfile {
     targetLevel: "B1",
     goals: "",
     correctionStyle: "gentle",
-    voice: "gemini",
     focusAreas: [],
     levels: null,
     levelNotes: "",
@@ -79,6 +79,43 @@ export async function readProfile(): Promise<LearnerProfile> {
   return { ...defaultProfile(), ...(await readJson<Partial<LearnerProfile>>(file("profile.json"), {})) };
 }
 export const writeProfile = (profile: LearnerProfile) => writeJson(file("profile.json"), profile);
+
+/** Defaults come from .env.local; choices made on the Settings page override them. */
+export function defaultSettings(): AppSettings {
+  return {
+    models: {
+      tutor: { provider: "claude", model: config.claude.tutorModel, effort: config.claude.tutorEffort },
+      review: { provider: "claude", model: config.claude.reviewModel, effort: config.claude.reviewEffort },
+      quiz: { provider: "gemini", model: config.gemini.textModel, effort: "low" },
+    },
+    transcription: { engine: "gemini", model: config.gemini.transcribeModel, whisperTiming: true },
+    memory: { enabled: true, model: config.ollama.embedModel },
+    voice: { provider: "gemini", geminiModel: config.gemini.ttsModel, geminiVoice: config.gemini.ttsVoice, browserVoiceEn: "", browserVoiceFr: "" },
+    updatedAt: "",
+  };
+}
+
+export async function readSettings(): Promise<AppSettings> {
+  const d = defaultSettings();
+  const s = await readJson<Partial<AppSettings>>(file("settings.json"), {});
+  return {
+    models: {
+      tutor: { ...d.models.tutor, ...s.models?.tutor },
+      review: { ...d.models.review, ...s.models?.review },
+      quiz: { ...d.models.quiz, ...s.models?.quiz },
+    },
+    transcription: { ...d.transcription, ...s.transcription },
+    memory: { ...d.memory, ...s.memory },
+    voice: { ...d.voice, ...s.voice },
+    updatedAt: s.updatedAt ?? d.updatedAt,
+  };
+}
+export const writeSettings = (settings: AppSettings) => writeJson(file("settings.json"), settings);
+
+/** Token totals per local day, keyed by "provider|model|feature". */
+export type UsageLog = Record<string, Record<string, UsageTotals>>;
+export const readUsage = () => readJson<UsageLog>(file("usage.json"), {});
+export const writeUsage = (usage: UsageLog) => writeJson(file("usage.json"), usage);
 
 export const readMistakes = () => readJson<MistakeRecord[]>(file("mistakes.json"), []);
 export const writeMistakes = (mistakes: MistakeRecord[]) => writeJson(file("mistakes.json"), mistakes);
@@ -98,7 +135,8 @@ function sessionFile(id: string): string {
 export const readSession = (id: string) => readJson<Session | null>(sessionFile(id), null);
 export const writeSession = (session: Session) => writeJson(sessionFile(session.id), session);
 
-export async function listSessions(): Promise<SessionSummary[]> {
+/** All sessions, newest first. */
+export async function readAllSessions(): Promise<Session[]> {
   let names: string[];
   try {
     names = await fs.readdir(file("sessions"));
@@ -108,12 +146,14 @@ export async function listSessions(): Promise<SessionSummary[]> {
   const sessions = await Promise.all(
     names.filter((n) => n.endsWith(".json")).map((n) => readJson<Session | null>(file(path.join("sessions", n)), null)),
   );
-  return sessions
-    .filter((s): s is Session => s !== null)
-    .map(({ turns, ...rest }) => ({
-      ...rest,
-      turnCount: turns.filter((t) => t.role === "student").length,
-      correctionCount: turns.reduce((n, t) => n + (t.reply?.corrections.length ?? 0), 0),
-    }))
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  return sessions.filter((s): s is Session => s !== null).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+}
+
+export function summarizeSession({ turns, ...rest }: Session): SessionSummary {
+  return {
+    ...rest,
+    turnCount: turns.filter((t) => t.role === "student").length,
+    correctionCount: turns.reduce((n, t) => n + (t.reply?.corrections.length ?? 0), 0),
+    fluency: averageFluency(turns.flatMap((t) => (t.fluency ? [t.fluency] : []))),
+  };
 }

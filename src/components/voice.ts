@@ -1,6 +1,6 @@
 "use client";
 
-import type { Lang, SpeechSegment, VoiceProvider } from "@/lib/types";
+import type { Lang, SpeechSegment, VoiceSettings } from "@/lib/types";
 
 /** Current loudness (0–1) of whoever is talking; the avatar reads it every frame. */
 export type LevelRef = { current: number };
@@ -15,26 +15,26 @@ export function rms(samples: Uint8Array): number {
 }
 
 /** Speaks the tutor's reply. Falls back to the browser's built-in voices if Gemini is unavailable. */
-export async function speak(segments: SpeechSegment[], provider: VoiceProvider, level: LevelRef, signal: AbortSignal): Promise<void> {
+export async function speak(segments: SpeechSegment[], voice: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
   const parts = segments.filter((s) => s.text.trim());
   if (parts.length === 0 || signal.aborted) return;
-  if (provider === "gemini") {
+  if (voice.provider === "gemini") {
     try {
-      await speakWithGemini(parts, level, signal);
+      await speakWithGemini(parts, voice, level, signal);
       return;
     } catch (err) {
       if (signal.aborted) return;
       console.warn("Gemini voice failed; using the browser voice instead.", err);
     }
   }
-  await speakWithBrowser(parts, level, signal);
+  await speakWithBrowser(parts, voice, level, signal);
 }
 
-async function speakWithGemini(segments: SpeechSegment[], level: LevelRef, signal: AbortSignal): Promise<void> {
+async function speakWithGemini(segments: SpeechSegment[], voice: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
   const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ segments }),
+    body: JSON.stringify({ segments, voice: voice.geminiVoice, model: voice.geminiModel }),
     signal,
   });
   if (!res.ok) throw new Error(`Voice request failed (${res.status})`);
@@ -93,7 +93,9 @@ const PREFERRED_VOICES: Record<Lang, string[]> = {
   fr: ["Denise", "Vivienne", "Eloise", "Amélie", "Audrey", "Google français"],
 };
 
-function pickVoice(voices: SpeechSynthesisVoice[], lang: Lang): SpeechSynthesisVoice | undefined {
+function pickVoice(voices: SpeechSynthesisVoice[], lang: Lang, chosen: string): SpeechSynthesisVoice | undefined {
+  const picked = chosen && voices.find((v) => v.name === chosen);
+  if (picked) return picked;
   const locale = lang === "en" ? "en-gb" : "fr-fr";
   const local = voices.filter((v) => v.lang.replace("_", "-").toLowerCase() === locale);
   for (const name of PREFERRED_VOICES[lang]) {
@@ -103,7 +105,7 @@ function pickVoice(voices: SpeechSynthesisVoice[], lang: Lang): SpeechSynthesisV
   return local.find((v) => /natural|online/i.test(v.name)) ?? local[0] ?? voices.find((v) => v.lang.startsWith(lang));
 }
 
-function loadVoices(synth: SpeechSynthesis): Promise<SpeechSynthesisVoice[]> {
+export function loadVoices(synth: SpeechSynthesis): Promise<SpeechSynthesisVoice[]> {
   const voices = synth.getVoices();
   if (voices.length) return Promise.resolve(voices);
   return new Promise((resolve) => {
@@ -119,7 +121,7 @@ function loadVoices(synth: SpeechSynthesis): Promise<SpeechSynthesisVoice[]> {
   });
 }
 
-async function speakWithBrowser(segments: SpeechSegment[], level: LevelRef, signal: AbortSignal): Promise<void> {
+async function speakWithBrowser(segments: SpeechSegment[], settings: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
   if (!("speechSynthesis" in window)) return;
   const synth = window.speechSynthesis;
   const voices = await loadVoices(synth);
@@ -133,7 +135,7 @@ async function speakWithBrowser(segments: SpeechSegment[], level: LevelRef, sign
       await new Promise<void>((resolve) => {
         const utterance = new SpeechSynthesisUtterance(segment.text);
         utterance.lang = segment.lang === "fr" ? "fr-FR" : "en-GB";
-        const voice = pickVoice(voices, segment.lang);
+        const voice = pickVoice(voices, segment.lang, segment.lang === "fr" ? settings.browserVoiceFr : settings.browserVoiceEn);
         if (voice) utterance.voice = voice;
         utterance.rate = segment.lang === "fr" ? 0.92 : 1;
         // Speech synthesis can silently never start (e.g. before any page interaction); cap the wait.

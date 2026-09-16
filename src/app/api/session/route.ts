@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateTutorReply } from "@/lib/claude";
+import { generateTutorReply } from "@/lib/brain";
 import { errorResponse } from "@/lib/http";
 import { recallMistakes, recordVocabulary } from "@/lib/learner";
 import { SESSION_START_NOTE, turnContext } from "@/lib/prompts";

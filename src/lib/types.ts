@@ -1,5 +1,7 @@
 // Shared between server routes and client components — no Node imports here.
 
+import type { FluencyAverage, FluencyStats } from "./fluency";
+
 export const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"] as const;
 export type CefrLevel = (typeof CEFR_LEVELS)[number];
 
@@ -93,6 +95,8 @@ export interface ChatTurn {
   text: string;
   at: string;
   inputMethod?: InputMethod;
+  /** Speaking speed for spoken turns. */
+  fluency?: FluencyStats;
   /** Learner context sent alongside this turn. Stored so the replayed history stays byte-identical for prompt caching. */
   context?: string;
   reply?: TutorReply;
@@ -115,6 +119,8 @@ export interface SessionReview {
   levelNotes: string;
   nextSessionPlan: string;
   encouragement: string;
+  /** Comment on speaking pace and pauses; absent in reviews made before speed was measured. */
+  fluencyNote?: string;
 }
 
 export interface Session {
@@ -128,7 +134,7 @@ export interface Session {
   review: SessionReview | null;
 }
 
-export type SessionSummary = Omit<Session, "turns"> & { turnCount: number; correctionCount: number };
+export type SessionSummary = Omit<Session, "turns"> & { turnCount: number; correctionCount: number; fluency: FluencyAverage | null };
 
 export type VoiceProvider = "gemini" | "browser";
 
@@ -138,7 +144,6 @@ export interface LearnerProfile {
   targetLevel: CefrLevel;
   goals: string;
   correctionStyle: "gentle" | "explicit";
-  voice: VoiceProvider;
   focusAreas: string[];
   levels: LevelEstimates | null;
   levelNotes: string;
@@ -194,6 +199,163 @@ export interface RoleplayScenario {
   title: string;
   level: CefrLevel;
   brief: string;
+}
+
+// ---------------------------------------------------------------------------
+// Settings: which AI does which job, and how the tutor sounds
+// ---------------------------------------------------------------------------
+
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
+
+/** The requested effort if supported, otherwise the nearest supported level (lower on a tie); undefined if none. */
+export function nearestEffort(requested: Effort, supported: readonly Effort[]): Effort | undefined {
+  if (supported.length === 0) return undefined;
+  if (supported.includes(requested)) return requested;
+  const rank = (e: Effort) => EFFORTS.indexOf(e);
+  return [...supported].sort((a, b) => Math.abs(rank(a) - rank(requested)) - Math.abs(rank(b) - rank(requested)) || rank(a) - rank(b))[0];
+}
+
+export const PROVIDERS = ["claude", "gemini", "ollama"] as const;
+export type Provider = (typeof PROVIDERS)[number];
+
+export const PROVIDER_LABELS: Record<Provider, string> = {
+  claude: "Claude",
+  gemini: "Gemini",
+  ollama: "Local (Ollama)",
+};
+
+/** Effort only applies to Claude models. */
+export interface ModelChoice {
+  provider: Provider;
+  model: string;
+  effort: Effort;
+}
+
+export const BRAIN_JOBS = ["tutor", "review", "quiz"] as const;
+export type BrainJob = (typeof BRAIN_JOBS)[number];
+
+export const JOB_LABELS: Record<BrainJob, { title: string; description: string }> = {
+  tutor: { title: "Tutor conversation", description: "Replies, corrections and explanations during sessions" },
+  review: { title: "Session review", description: "Level estimates and focus areas when a session ends" },
+  quiz: { title: "Quiz writer", description: "Written quizzes on the Practice page" },
+};
+
+export interface VoiceSettings {
+  provider: VoiceProvider;
+  geminiModel: string;
+  geminiVoice: string;
+  /** Browser voice names; empty means pick automatically. */
+  browserVoiceEn: string;
+  browserVoiceFr: string;
+}
+
+export type TranscriptionEngine = "gemini" | "whisper";
+
+export interface AppSettings {
+  models: Record<BrainJob, ModelChoice>;
+  /** `model` is the Gemini model; Whisper's model is chosen when its local server starts. */
+  transcription: { engine: TranscriptionEngine; model: string; whisperTiming: boolean };
+  memory: { enabled: boolean; model: string };
+  voice: VoiceSettings;
+  updatedAt: string;
+}
+
+export interface OllamaModelInfo {
+  name: string;
+  parameterSize: string;
+  sizeGb: number;
+  capabilities: string[];
+}
+
+export interface SettingsOptions {
+  claude: { connected: boolean; models: { id: string; label: string; efforts: Effort[]; structuredOutputs: boolean }[] };
+  gemini: { connected: boolean; text: string[]; tts: string[]; transcribe: string[] };
+  ollama: { online: boolean; chat: OllamaModelInfo[]; embedding: OllamaModelInfo[] };
+  whisper: { online: boolean; model: string | null; device: string | null };
+}
+
+// Gemini's prebuilt TTS voices and their style descriptions.
+export const GEMINI_VOICES: { name: string; style: string }[] = [
+  { name: "Achernar", style: "Soft" },
+  { name: "Achird", style: "Friendly" },
+  { name: "Algenib", style: "Gravelly" },
+  { name: "Algieba", style: "Smooth" },
+  { name: "Alnilam", style: "Firm" },
+  { name: "Aoede", style: "Breezy" },
+  { name: "Autonoe", style: "Bright" },
+  { name: "Callirrhoe", style: "Easy-going" },
+  { name: "Charon", style: "Informative" },
+  { name: "Despina", style: "Smooth" },
+  { name: "Enceladus", style: "Breathy" },
+  { name: "Erinome", style: "Clear" },
+  { name: "Fenrir", style: "Excitable" },
+  { name: "Gacrux", style: "Mature" },
+  { name: "Iapetus", style: "Clear" },
+  { name: "Kore", style: "Firm" },
+  { name: "Laomedeia", style: "Upbeat" },
+  { name: "Leda", style: "Youthful" },
+  { name: "Orus", style: "Firm" },
+  { name: "Pulcherrima", style: "Forward" },
+  { name: "Puck", style: "Upbeat" },
+  { name: "Rasalgethi", style: "Informative" },
+  { name: "Sadachbia", style: "Lively" },
+  { name: "Sadaltager", style: "Knowledgeable" },
+  { name: "Schedar", style: "Even" },
+  { name: "Sulafat", style: "Warm" },
+  { name: "Umbriel", style: "Easy-going" },
+  { name: "Vindemiatrix", style: "Gentle" },
+  { name: "Zephyr", style: "Bright" },
+  { name: "Zubenelgenubi", style: "Casual" },
+];
+
+// ---------------------------------------------------------------------------
+// Token usage
+// ---------------------------------------------------------------------------
+
+export const USAGE_FEATURES = ["tutor", "review", "quiz", "transcription", "voice", "memory"] as const;
+export type UsageFeature = (typeof USAGE_FEATURES)[number];
+
+export const FEATURE_LABELS: Record<UsageFeature, string> = {
+  tutor: "Tutor conversation",
+  review: "Session review",
+  quiz: "Quiz writer",
+  transcription: "Transcription",
+  voice: "Voice",
+  memory: "Mistake memory",
+};
+
+export interface UsageTotals {
+  input: number;
+  output: number;
+  /** Input tokens served from cache (billed at a lower rate). Included in `input`. */
+  cached: number;
+  calls: number;
+}
+
+/** Usage is also tracked for the local Whisper server, which isn't a selectable "brain". */
+export const USAGE_PROVIDERS = ["claude", "gemini", "ollama", "whisper"] as const;
+export type UsageProvider = (typeof USAGE_PROVIDERS)[number];
+
+export const USAGE_PROVIDER_LABELS: Record<UsageProvider, string> = {
+  claude: "Claude",
+  gemini: "Gemini",
+  ollama: "Local (Ollama)",
+  whisper: "Local (Whisper)",
+};
+
+export interface UsageRow extends UsageTotals {
+  provider: UsageProvider;
+  model: string;
+  feature: UsageFeature;
+}
+
+export interface UsageReport {
+  today: string;
+  month: string;
+  todayRows: UsageRow[];
+  monthRows: UsageRow[];
+  daily: { day: string; totals: Record<UsageProvider, UsageTotals> }[];
 }
 
 export const ROLEPLAY_SCENARIOS: RoleplayScenario[] = [

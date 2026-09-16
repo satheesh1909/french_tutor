@@ -14,8 +14,31 @@ This is **Phase 1**: the tutoring brain, voice, memory and progress tracking. Th
 | Her voice (text → speech) | **Gemini** `gemini-3.1-flash-tts-preview` | One voice: British accent in English, native accent in French |
 | Written quizzes | **Gemini** `gemini-3.8-flash` | Fast, cheap question writing |
 | Remembering and grouping your mistakes | **Ollama** `nomic-embed-text` (local) | Free, private, instant; spots repeat mistakes |
+| Speaking speed (word timings) | **Whisper** `medium` via faster-whisper (local, GPU) | Exact start and end time for every word; runs alongside Gemini with no extra wait |
+
+## Speaking speed
+
+Every spoken answer is timed. You'll see:
+- **words per minute**, pauses included
+- **words per minute while talking**, with pauses left out
+- **pauses** of 0.4 s or longer
+
+The numbers appear under each spoken message, in the side panel during a session, in the session review, and on the Progress page (today, last 7 days, this month, all time).
+
+The most precise timings come from the local Whisper server. If it isn't running, speed is estimated from when your recording is loud enough to be speech.
+
+Whisper can also do all the transcription (Settings → Speech to text). That mode is free and offline, but Whisper tends to tidy small slips (e.g. "que il" becomes "qu'il") and handles one language per recording, so Gemini remains the default for the words.
 
 Everything still works if Ollama is closed. Only similar-mistake recall is turned off.
+
+These are the defaults. On the **Settings** page you can:
+
+- choose Claude, Gemini or a local Ollama model for the tutor, the session review and the quiz writer, including the model and, for Claude, the effort level
+- pick the transcription model and the local embedding model, or turn mistake memory off
+- choose the voice (any of Gemini's 30 voices, or your computer's own voices) and preview it before saving
+- see token usage for today and this month, split into Local LLM, Gemini and Claude, with a breakdown by model and job
+
+Small local models are free and private but unreliable for grammar. In testing, `qwen2.5:7b` returned empty replies and `llama3:8b` gave wrong corrections. Use them for casual practice only.
 
 ## Setup
 
@@ -24,14 +47,17 @@ Everything still works if Ollama is closed. Only similar-mistake recall is turne
    - `ANTHROPIC_API_KEY`: create one at [console.anthropic.com](https://console.anthropic.com). This is separate from a Claude.ai subscription.
    - `GEMINI_API_KEY`: from [Google AI Studio](https://aistudio.google.com/apikey). If `GOOGLE_API_KEY` is already set in your system environment, it's used automatically.
 3. Optional: keep Ollama running with `ollama pull nomic-embed-text`.
-4. Install dependencies and start the app:
+4. Optional, for precise speaking speed: Python with `pip install faster-whisper` (an NVIDIA GPU makes it fast).
+5. Install dependencies, then start everything:
 
    ```bash
    npm install
-   npm run dev
+   powershell -ExecutionPolicy Bypass -File .\start-tutor.ps1
    ```
 
-5. Open http://localhost:3000 in Chrome or Edge and allow microphone access.
+   This starts Whisper in its own minimised window and the app in the current one. To start them separately instead, run `npm run whisper` in one terminal and `npm run dev` in another. The first Whisper start takes up to a minute.
+
+6. Open http://localhost:3000 in Chrome or Edge and allow microphone access.
 
 ## Using it
 

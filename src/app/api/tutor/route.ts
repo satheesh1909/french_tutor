@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { generateTutorReply } from "@/lib/claude";
+import { generateTutorReply } from "@/lib/brain";
+import { sanitizeFluency } from "@/lib/fluency";
 import { errorResponse } from "@/lib/http";
 import { recallMistakes, recordCorrections, recordVocabulary } from "@/lib/learner";
 import { turnContext } from "@/lib/prompts";
@@ -9,7 +10,7 @@ import { speechText, type ChatTurn, type InputMethod } from "@/lib/types";
 /** One conversational exchange: the student's message in, the tutor's reply and corrections out. */
 export async function POST(req: Request) {
   try {
-    const body = (await req.json().catch(() => ({}))) as { sessionId?: unknown; text?: unknown; inputMethod?: unknown };
+    const body = (await req.json().catch(() => ({}))) as { sessionId?: unknown; text?: unknown; inputMethod?: unknown; fluency?: unknown };
     const text = typeof body.text === "string" ? body.text.trim().slice(0, 2000) : "";
     if (!text) return NextResponse.json({ error: "Say or type something first." }, { status: 400 });
 
@@ -24,6 +25,7 @@ export async function POST(req: Request) {
       role: "student",
       text,
       inputMethod,
+      fluency: inputMethod === "voice" ? sanitizeFluency(body.fluency) : undefined,
       context: turnContext(profile, session, recalled, inputMethod),
       at: new Date().toISOString(),
     };

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateQuiz } from "@/lib/gemini";
+import { generateQuiz } from "@/lib/brain";
 import { errorResponse } from "@/lib/http";
 import { readCards, readMistakes, readProfile } from "@/lib/store";
 

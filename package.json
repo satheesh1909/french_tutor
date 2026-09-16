@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "whisper": "python whisper_server/server.py"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",

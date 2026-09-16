@@ -1,20 +1,26 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CATEGORY_LABELS,
   MODE_LABELS,
+  PROVIDER_LABELS,
   ROLEPLAY_SCENARIOS,
   TUTOR_MODES,
+  type AppSettings,
   type ChatTurn,
   type InputMethod,
-  type LearnerProfile,
+  type ModelChoice,
+  type Provider,
   type Session,
   type SessionReview,
   type TutorMode,
   type VocabItem,
   type VoiceProvider,
+  type VoiceSettings,
 } from "@/lib/types";
+import { averageFluency, PACE_GUIDE, type FluencyStats } from "@/lib/fluency";
 import { api, errorMessage } from "./api";
 import { AvatarStage, type StageState } from "./AvatarStage";
 import { useRecorder } from "./useRecorder";
@@ -24,12 +30,19 @@ interface Health {
   claude: boolean;
   gemini: boolean;
   ollama: { online: boolean; hasEmbedModel: boolean };
+  whisper: { online: boolean; model: string | null; device: string | null };
+  transcription: { engine: "gemini" | "whisper"; ready: boolean };
+  uses: Record<Provider, boolean>;
+  tutor: ModelChoice;
+  voice: VoiceSettings;
   tutorName: string;
 }
 
+const BROWSER_VOICE: VoiceSettings = { provider: "browser", geminiModel: "", geminiVoice: "", browserVoiceEn: "", browserVoiceFr: "" };
+
 export function TutorApp() {
   const [health, setHealth] = useState<Health | null>(null);
-  const [profile, setProfile] = useState<LearnerProfile | null>(null);
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [review, setReview] = useState<SessionReview | null>(null);
   const [status, setStatus] = useState<StageState>("idle");
@@ -44,15 +57,17 @@ export function TutorApp() {
   const { recording, start: startRecording, stop: stopRecording, isRecording } = useRecorder(level);
 
   const tutorName = health?.tutorName ?? "Charlotte";
-  const voice: VoiceProvider = profile?.voice ?? "gemini";
+  const voice = voiceSettings ?? BROWSER_VOICE;
   const busy = status === "thinking" || status === "transcribing";
   const active = session !== null && session.endedAt === null;
 
   useEffect(() => {
-    api.get<Health>("/api/health").then(setHealth).catch(() => setHealth(null));
     api
-      .get<{ profile: LearnerProfile }>("/api/profile")
-      .then((r) => setProfile(r.profile))
+      .get<Health>("/api/health")
+      .then((h) => {
+        setHealth(h);
+        setVoiceSettings(h.voice);
+      })
       .catch((e) => setError(errorMessage(e)));
   }, []);
 
@@ -106,17 +121,17 @@ export function TutorApp() {
   );
 
   const send = useCallback(
-    async (text: string, inputMethod: InputMethod) => {
+    async (text: string, inputMethod: InputMethod, fluency?: FluencyStats) => {
       const trimmed = text.trim();
       if (!session || !trimmed) return;
       setError(null);
       setStatus("thinking");
-      const pending: ChatTurn = { id: `pending-${Date.now()}`, role: "student", text: trimmed, inputMethod, at: new Date().toISOString() };
+      const pending: ChatTurn = { id: `pending-${Date.now()}`, role: "student", text: trimmed, inputMethod, fluency, at: new Date().toISOString() };
       setSession((s) => s && { ...s, turns: [...s.turns, pending] });
 
       let result: { studentTurn: ChatTurn; tutorTurn: ChatTurn };
       try {
-        result = await api.post("/api/tutor", { sessionId: session.id, text: trimmed, inputMethod });
+        result = await api.post("/api/tutor", { sessionId: session.id, text: trimmed, inputMethod, fluency });
       } catch (e) {
         setSession((s) => s && { ...s, turns: s.turns.filter((t) => t.id !== pending.id) });
         setDraft(trimmed); // keep what they said so they can resend it
@@ -156,16 +171,20 @@ export function TutorApp() {
     if (!isRecording()) return;
     setStatus("transcribing");
     try {
-      const wav = await stopRecording();
-      if (!wav) return setStatus("idle");
-      const res = await fetch("/api/transcribe", { method: "POST", headers: { "content-type": "audio/wav" }, body: wav });
-      const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+      const clip = await stopRecording();
+      if (!clip) return setStatus("idle");
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "content-type": "audio/wav", "x-speech-timing": JSON.stringify(clip.timing) },
+        body: clip.wav,
+      });
+      const data = (await res.json().catch(() => ({}))) as { text?: string; fluency?: FluencyStats | null; error?: string };
       if (!res.ok) throw new Error(data.error ?? "Transcription failed.");
       if (!data.text) {
         setError("I didn't catch that. Try again, a little closer to the mic.");
         return setStatus("idle");
       }
-      await send(data.text, "voice");
+      await send(data.text, "voice", data.fluency ?? undefined);
     } catch (e) {
       setError(errorMessage(e));
       setStatus("idle");
@@ -209,9 +228,8 @@ export function TutorApp() {
     }
     setStatus("thinking");
     try {
-      const res = await api.post<{ review: SessionReview | null; profile: LearnerProfile }>("/api/session/end", { sessionId: session.id });
+      const res = await api.post<{ review: SessionReview | null }>("/api/session/end", { sessionId: session.id });
       setReview(res.review);
-      setProfile(res.profile);
       setSession((s) => s && { ...s, endedAt: new Date().toISOString(), review: res.review });
     } catch (e) {
       setError(errorMessage(e));
@@ -220,9 +238,12 @@ export function TutorApp() {
     }
   }, [session, stopSpeaking, isRecording, stopRecording]);
 
-  const changeVoice = useCallback((next: VoiceProvider) => {
-    setProfile((p) => p && { ...p, voice: next });
-    api.put("/api/profile", { voice: next }).catch((e) => setError(errorMessage(e)));
+  const changeVoice = useCallback((provider: VoiceProvider) => {
+    setVoiceSettings((v) => v && { ...v, provider });
+    api
+      .put<{ settings: AppSettings }>("/api/settings", { voice: { provider } })
+      .then((r) => setVoiceSettings(r.settings.voice))
+      .catch((e) => setError(errorMessage(e)));
   }, []);
 
   const submitDraft = () => {
@@ -276,13 +297,18 @@ export function TutorApp() {
         )}
         <div className="voice-toggle" role="radiogroup" aria-label="Tutor voice">
           <span className="voice-toggle__label">Voice</span>
-          <button className="seg-btn" role="radio" aria-checked={voice === "gemini"} onClick={() => changeVoice("gemini")} disabled={health?.gemini === false}>
+          <button className="seg-btn" role="radio" aria-checked={voice.provider === "gemini"} onClick={() => changeVoice("gemini")} disabled={health?.gemini === false}>
             Gemini
           </button>
-          <button className="seg-btn" role="radio" aria-checked={voice === "browser"} onClick={() => changeVoice("browser")}>
+          <button className="seg-btn" role="radio" aria-checked={voice.provider === "browser"} onClick={() => changeVoice("browser")}>
             Browser
           </button>
         </div>
+        {health && (
+          <p className="brain-tag">
+            Tutor brain: {PROVIDER_LABELS[health.tutor.provider]} · {health.tutor.model} · <Link href="/settings">Change</Link>
+          </p>
+        )}
       </section>
 
       <section className="panel tutor__chat">
@@ -316,7 +342,7 @@ export function TutorApp() {
           <button
             className={`mic${recording ? " mic--on" : ""}`}
             onClick={toggleMic}
-            disabled={!active || (busy && !recording) || health?.gemini === false}
+            disabled={!active || (busy && !recording) || health?.transcription.ready === false}
             aria-pressed={recording}
           >
             <MicIcon />
@@ -411,8 +437,18 @@ function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: Tutor
 function SetupNotice({ health }: { health: Health | null }) {
   if (!health) return null;
   const issues: string[] = [];
-  if (!health.claude) issues.push("Claude isn't connected. Add ANTHROPIC_API_KEY to .env.local, then restart the app.");
-  if (!health.gemini) issues.push("Gemini isn't connected, so the microphone and natural voice are off. Add GEMINI_API_KEY to .env.local. You can type meanwhile.");
+  if (health.uses.claude && !health.claude) {
+    issues.push("A job is set to Claude, but Claude isn't connected. Add ANTHROPIC_API_KEY to .env.local and restart, or pick another model in Settings.");
+  }
+  if (!health.transcription.ready) {
+    issues.push(
+      health.transcription.engine === "whisper"
+        ? 'Transcription is set to local Whisper, but its server isn\'t running, so the microphone is off. Run "npm run whisper", or switch to Gemini in Settings.'
+        : "Gemini isn't connected, so the microphone is off. Add GEMINI_API_KEY to .env.local, or use local Whisper (Settings). You can type meanwhile.",
+    );
+  }
+  if (health.voice.provider === "gemini" && !health.gemini) issues.push("The Gemini voice needs a Gemini key; the browser voice is used instead.");
+  if (health.uses.ollama && !health.ollama.online) issues.push("A job is set to a local model, but Ollama isn't running. Start Ollama or pick another model in Settings.");
   if (issues.length === 0) return null;
   return (
     <div className="notice">
@@ -438,6 +474,7 @@ function Transcript({ turns, onReplay }: { turns: ChatTurn[]; onReplay: (turn: C
               </div>
               <div className="turn__meta">
                 {turn.inputMethod === "voice" ? "Spoken" : "Typed"}
+                {turn.fluency?.reliable && ` · ${turn.fluency.wpm} wpm · ${turn.fluency.pauses} pause${turn.fluency.pauses === 1 ? "" : "s"}`}
                 {fixes.length > 0 && ` · ${fixes.length} correction${fixes.length === 1 ? "" : "s"}`}
               </div>
               {fixes.length > 0 && (
@@ -477,10 +514,38 @@ function FeedbackPanel({ session, review, ollamaOnline }: { session: Session | n
   const turns = session?.turns ?? [];
   const corrections = turns.flatMap((t) => t.reply?.corrections ?? []).reverse();
   const vocab = [...new Map(turns.flatMap((t) => t.reply?.vocabulary ?? []).map((v): [string, VocabItem] => [v.french.toLowerCase(), v])).values()].reverse();
+  const timed = turns.flatMap((t) => (t.fluency ? [t.fluency] : []));
+  const speed = averageFluency(timed);
+  const lastTimed = timed.filter((f) => f.reliable).at(-1);
 
   return (
     <div className="feedback">
       {review && <ReviewSummary review={review} />}
+      <h2 className="section-title">Speaking speed</h2>
+      {speed && lastTimed ? (
+        <div className="speed">
+          <div className="speed__stats">
+            <div>
+              <strong>{speed.wpm}</strong>
+              <span>wpm this session</span>
+            </div>
+            <div>
+              <strong>{lastTimed.wpm}</strong>
+              <span>last answer</span>
+            </div>
+            <div>
+              <strong>{speed.pausesPerMinute}</strong>
+              <span>pauses / min</span>
+            </div>
+          </div>
+          <p className="small muted">
+            {speed.articulationWpm} wpm while talking (pauses left out) · measured {lastTimed.source === "whisper" ? "with Whisper word timings" : "from the recording"}
+          </p>
+          <p className="small muted">Rough guide: {PACE_GUIDE.map((p) => `${p.level} ${p.range}`).join(" · ")} wpm</p>
+        </div>
+      ) : (
+        <p className="muted small">Speak an answer of a few words and your speaking speed appears here.</p>
+      )}
       <h2 className="section-title">
         Corrections <span className="count">{corrections.length}</span>
       </h2>
@@ -538,6 +603,12 @@ function ReviewSummary({ review }: { review: SessionReview }) {
         ))}
       </div>
       <p className="small muted">{review.levelNotes}</p>
+      {review.fluencyNote && (
+        <>
+          <h3 className="subhead">Speaking speed</h3>
+          <p className="small">{review.fluencyNote}</p>
+        </>
+      )}
       <h3 className="subhead">What went well</h3>
       <ul>
         {review.strengths.map((s) => (
