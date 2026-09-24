@@ -65,9 +65,10 @@ export async function ollamaStructured<T extends z.ZodType>(req: StructuredReque
         ...(info?.capabilities.includes("thinking") ? { think: false } : {}),
         options: { temperature: 0.4, num_ctx: 8192 },
       }),
-      signal: AbortSignal.timeout(300_000),
+      signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
     });
-  } catch {
+  } catch (err) {
+    if (req.signal?.aborted) throw err;
     throw new UserFacingError(`The local model "${req.model}" isn't reachable. Is Ollama running?`, 503);
   }
   if (!res.ok) throw new UserFacingError(`The local model "${req.model}" failed: ${await res.text()}`, 502);

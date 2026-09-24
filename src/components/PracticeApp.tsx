@@ -6,6 +6,7 @@ import type { Grade } from "@/lib/srs";
 import { CATEGORY_LABELS, type AppSettings, type QuizQuestion, type ReviewCard, type VoiceSettings } from "@/lib/types";
 import { api, errorMessage } from "./api";
 import { formatWhen } from "./format";
+import { QuizPlayer } from "./QuizPlayer";
 import { speak } from "./voice";
 
 const RESULT_TITLES: Record<AnswerResult, string> = {
@@ -191,19 +192,8 @@ function ReviewDeck({ listen }: { listen: (text: string) => void }) {
 
 function QuizRunner({ listen }: { listen: (text: string) => void }) {
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
-  const [index, setIndex] = useState(0);
-  const [answer, setAnswer] = useState("");
-  const [picked, setPicked] = useState<string | null>(null);
-  const [result, setResult] = useState<AnswerResult | null>(null);
-  const [score, setScore] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const resetQuestion = () => {
-    setAnswer("");
-    setPicked(null);
-    setResult(null);
-  };
 
   const create = async () => {
     setLoading(true);
@@ -211,9 +201,6 @@ function QuizRunner({ listen }: { listen: (text: string) => void }) {
     try {
       const { questions: fresh } = await api.post<{ questions: QuizQuestion[] }>("/api/quiz", { count: 8 });
       setQuestions(fresh);
-      setIndex(0);
-      setScore(0);
-      resetQuestion();
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -226,8 +213,9 @@ function QuizRunner({ listen }: { listen: (text: string) => void }) {
       <div className="panel empty">
         <h2>Written quiz</h2>
         <p className="muted">
-          Gemini writes a fresh quiz from your most frequent mistakes and newest vocabulary. Until you have some history, it covers core A2 → B1 grammar.
+          A fresh quiz, written from your most frequent mistakes and newest vocabulary. Until you have some history, it covers core A2 &rarr; B1 grammar.
         </p>
+        <p className="small muted">For a quiz on one particular point, ask the coach on the Progress page.</p>
         {questions?.length === 0 && <p className="small">No usable questions came back. Try again.</p>}
         {error && <div className="alert">{error}</div>}
         <button className="btn btn--primary" onClick={() => void create()} disabled={loading}>
@@ -237,111 +225,10 @@ function QuizRunner({ listen }: { listen: (text: string) => void }) {
     );
   }
 
-  if (index >= questions.length) {
-    return (
-      <div className="panel empty">
-        <h2>
-          Score: {score} / {questions.length}
-        </h2>
-        <p className="muted">{score === questions.length ? "Parfait !" : "The ones you missed are good material for your next session."}</p>
-        {error && <div className="alert">{error}</div>}
-        <button className="btn btn--primary" onClick={() => void create()} disabled={loading}>
-          {loading ? "Writing your quiz…" : "New quiz"}
-        </button>
-      </div>
-    );
-  }
-
-  const q = questions[index];
-  const submit = (value: string) => {
-    const r = checkAnswer(value, q.acceptedAnswers);
-    setResult(r);
-    if (r !== "wrong") setScore((s) => s + 1);
-  };
-
   return (
-    <div className="panel flash" key={q.id}>
-      <div className="flash__top">
-        <span className="eyebrow">
-          Question {index + 1} of {questions.length}
-        </span>
-        <span className="muted small">Score {score}</span>
-      </div>
-      <p className="flash__prompt">{q.question}</p>
-      <span className="chip">{CATEGORY_LABELS[q.category]}</span>
-
-      {q.type === "multiple_choice" ? (
-        <div className="options">
-          {q.options.map((o) => {
-            const state = result === null ? "" : o === q.answer ? " option--correct" : o === picked ? " option--wrong" : "";
-            return (
-              <button
-                key={o}
-                lang="fr"
-                className={`option${state}`}
-                disabled={result !== null}
-                onClick={() => {
-                  setPicked(o);
-                  submit(o);
-                }}
-              >
-                {o}
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <>
-          <input
-            className="input flash__input"
-            lang="fr"
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && result === null && answer.trim()) submit(answer);
-            }}
-            placeholder={q.type === "translate" ? "Écris la traduction" : "The missing word(s)"}
-            disabled={result !== null}
-            autoFocus
-            spellCheck={false}
-            aria-label="Your answer"
-          />
-          {result === null && (
-            <div className="row">
-              <button className="btn btn--primary" onClick={() => submit(answer)} disabled={!answer.trim()}>
-                Check
-              </button>
-              <button className="btn btn--ghost" onClick={() => setResult("wrong")}>
-                Show answer
-              </button>
-            </div>
-          )}
-        </>
-      )}
-
-      {result !== null && (
-        <div className={`result result--${result}`}>
-          <p className="result__title">{RESULT_TITLES[result]}</p>
-          <p className="result__answer" lang="fr">
-            {q.answer}
-            <button className="link" onClick={() => listen(q.answer)}>
-              Listen
-            </button>
-          </p>
-          <p className="small">{q.explanation}</p>
-          <div className="row">
-            <button
-              className="btn btn--primary"
-              onClick={() => {
-                setIndex((i) => i + 1);
-                resetQuestion();
-              }}
-            >
-              {index + 1 < questions.length ? "Next question" : "See score"}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+    <>
+      {error && <div className="alert">{error}</div>}
+      <QuizPlayer questions={questions} listen={listen} onNew={() => void create()} busy={loading} />
+    </>
   );
 }

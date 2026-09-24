@@ -3,11 +3,12 @@
 import { useEffect, useRef } from "react";
 import type { LevelRef } from "./voice";
 
-export type StageState = "idle" | "listening" | "transcribing" | "thinking" | "speaking";
+export type StageState = "idle" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking";
 
 const CAPTIONS: Record<StageState, string> = {
   idle: "Ready when you are",
-  listening: "Listening…",
+  listening: "Listening… just speak",
+  hearing: "Hearing you…",
   transcribing: "Catching your words…",
   thinking: "Thinking…",
   speaking: "Speaking",

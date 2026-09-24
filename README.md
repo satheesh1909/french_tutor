@@ -10,6 +10,7 @@ This is **Phase 1**: the tutoring brain, voice, memory and progress tracking. Th
 |---|---|---|
 | Conversation, corrections, explanations | **Claude** (Opus 5) | Needs the most reliable French grammar judgement |
 | End-of-session review and level estimate | **Claude** (Opus 5, high effort) | Careful assessment against CEFR descriptors |
+| Answering questions about your level | **Claude** (Progress page) | Reads every review, mistake and speed figure before answering |
 | Hearing you (speech → text) | **Gemini** `gemini-3.5-transcribe`, verbatim mode | Keeps your mistakes in the transcript instead of silently fixing them |
 | Her voice (text → speech) | **Gemini** `gemini-3.1-flash-tts-preview` | One voice: British accent in English, native accent in French |
 | Written quizzes | **Gemini** `gemini-3.8-flash` | Fast, cheap question writing |
@@ -33,9 +34,10 @@ Everything still works if Ollama is closed. Only similar-mistake recall is turne
 
 These are the defaults. On the **Settings** page you can:
 
-- choose Claude, Gemini or a local Ollama model for the tutor, the session review and the quiz writer, including the model and, for Claude, the effort level
+- choose Claude, Gemini or a local Ollama model for the tutor, the session review, the quiz writer and the level coach, including the model and, for Claude, the effort level
 - pick the transcription model and the local embedding model, or turn mistake memory off
-- choose the voice (any of Gemini's 30 voices, or your computer's own voices) and preview it before saving
+- choose the voice: press play on any of Gemini's 30 voices to hear it before choosing, or use your computer's own voices (the Tutor page also has a quick voice picker with a **Hear** button)
+- set how long a pause ends your turn, the microphone sensitivity, and whether talking over the tutor interrupts her
 - see token usage for today and this month, split into Local LLM, Gemini and Claude, with a breakdown by model and job
 
 Small local models are free and private but unreliable for grammar. In testing, `qwen2.5:7b` returned empty replies and `llama3:8b` gave wrong corrections. Use them for casual practice only.
@@ -61,9 +63,9 @@ Small local models are free and private but unreliable for grammar. In testing, 
 
 ## Using it
 
-- **Tutor**: pick an activity (Conversation, Role-play, Lesson, Oral quiz, Level check). Click **Speak** or hold **Space** to talk, or type. Corrections show under your message and, with explanations, in the right-hand panel. Press **End & review** when you're done: Claude reviews the session and updates your level, focus areas and next-session plan.
+- **Tutor**: pick an activity (Conversation, Role-play, Lesson, Oral quiz, Level check). Role-plays come in two groups: everyday life (café, doctor, flat hunting) and the office (first day, coffee break, stand-up, one-to-one, slipping a deadline, client call, explaining a process, presenting a project, disagreeing with a colleague, appraisal, negotiating with a supplier, interview, remote-work debate). Choose **Describe a situation…** to role-play anything else in your own words, and use the text box to add detail such as your job or the client's name. In **hands-free** mode (on by default) the microphone stays open: just talk, and your answer is sent after a pause of about two seconds. Talking while she speaks stops her; carrying on after a pause merges both parts into one answer. The bar next to the microphone shows what the app hears, **Send now** skips the wait, and **Pause** stops listening. Turn hands-free off to use the **Speak** button or hold **Space** instead, or just type. Corrections show under your message and, with explanations, in the right-hand panel. Press **End & review** when you're done: Claude reviews the session and updates your level, focus areas and next-session plan.
 - **Practice**: spaced-repetition cards, created automatically from your mistakes and new vocabulary, plus Gemini-written quizzes aimed at your weak spots.
-- **Progress**: your level estimates, mistake patterns, session history and settings (name, goals, correction style, voice).
+- **Progress**: your level estimates, mistake patterns, session history and settings (name, goals, correction style, voice). **Ask about your level** puts your questions to a DELF examiner who has read every session review, every logged mistake and your measured speaking speed: "what is stopping me reaching B1?", "how did my last level check go?". Answers quote the evidence, and where a drill would help you get a one-click **Quiz me on...** button. You can also ask for a quiz on any point you name.
 
 Start with a **Level check** session so the tutor calibrates to you.
 
@@ -86,6 +88,7 @@ src/
   lib/ollama.ts   local embeddings
   lib/learner.ts  mistake history, similar-mistake recall, review-card creation
   lib/prompts.ts  all prompts
+  lib/types.ts    shared types, the activity list and the role-play scenarios (add your own here)
   lib/srs.ts      spaced-repetition scheduling
   lib/store.ts    JSON file storage
   components/     Tutor, Practice and Progress screens, mic recorder, voice playback, avatar stage

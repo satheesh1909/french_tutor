@@ -1,5 +1,5 @@
 import { config } from "./config";
-import { averageFluency } from "./fluency";
+import { averageFluency, PACE_GUIDE } from "./fluency";
 import type { RecalledMistakes } from "./learner";
 import {
   CATEGORY_LABELS,
@@ -67,7 +67,11 @@ function activity(session: Pick<Session, "mode" | "scenarioId" | "topic">): stri
   switch (session.mode) {
     case "roleplay": {
       const s = ROLEPLAY_SCENARIOS.find((x) => x.id === session.scenarioId);
-      return s ? `roleplay "${s.title}" (${s.level}): ${s.brief}` : "roleplay: pick a realistic everyday scenario suited to their level";
+      const detail = session.topic ? ` Details from the student: ${session.topic}` : "";
+      if (s) return `roleplay "${s.title}" (${s.level}): ${s.brief}${detail}`;
+      return session.topic
+        ? `roleplay a situation the student described themselves: ${session.topic}. Choose which character you play, say in one short line who you are and where you both are, then stay in character.`
+        : "roleplay: pick a realistic everyday scenario suited to their level";
     }
     case "lesson":
       return `lesson on ${session.topic || "the most useful focus area for their level"}`;
@@ -180,7 +184,7 @@ ${corrections}
 // Written quiz (Gemini)
 // ---------------------------------------------------------------------------
 
-export function quizPrompt(profile: LearnerProfile, mistakes: MistakeRecord[], vocab: ReviewCard[], count: number): string {
+export function quizPrompt(profile: LearnerProfile, mistakes: MistakeRecord[], vocab: ReviewCard[], count: number, topic?: string | null): string {
   const topMistakes = [...mistakes]
     .sort((a, b) => b.count - a.count || b.lastSeen.localeCompare(a.lastSeen))
     .slice(0, 15)
@@ -195,8 +199,9 @@ export function quizPrompt(profile: LearnerProfile, mistakes: MistakeRecord[], v
   return `You write French practice questions for an adult English-speaking learner at CEFR ${profile.currentLevel}, aiming for ${profile.targetLevel}.
 
 Write exactly ${count} questions.
-${topMistakes ? `Most should target these mistakes from the learner's history:\n${topMistakes}` : `The learner has no mistake history yet. Cover core ${profile.currentLevel}→${profile.targetLevel} grammar: passé composé vs imparfait, être vs avoir, articles and contractions, object pronouns, y and en, futur simple, conditionnel.`}
-${recentVocab ? `Include a few questions on this recent vocabulary:\n${recentVocab}` : ""}
+${topic ? `Every question must practise this, which the learner asked for: ${topic}. Pitch it at their level and vary the angle from question to question.` : ""}
+${topMistakes ? `${topic ? "Where it fits the topic, draw on" : "Most should target"} these mistakes from the learner's history:\n${topMistakes}` : `The learner has no mistake history yet. Cover core ${profile.currentLevel}→${profile.targetLevel} grammar: passé composé vs imparfait, être vs avoir, articles and contractions, object pronouns, y and en, futur simple, conditionnel.`}
+${recentVocab && !topic ? `Include a few questions on this recent vocabulary:\n${recentVocab}` : ""}
 ${profile.focusAreas.length ? `Current focus areas: ${profile.focusAreas.join("; ")}` : ""}
 
 Rules:
@@ -210,4 +215,88 @@ Rules:
 - Don't reuse the learner's sentences word for word; write fresh examples of the same pattern.
 - explanation: one or two English sentences stating the rule.
 - category: one of ${ERROR_CATEGORIES.join(", ")}.`;
+}
+
+// ---------------------------------------------------------------------------
+// Level coach (Progress page)
+// ---------------------------------------------------------------------------
+
+export const COACH_SYSTEM_PROMPT = `You are an experienced French teacher and DELF examiner talking to your own adult English-speaking student about their progress. They are working from CEFR A2 towards B1, then B2. This is a written conversation on their Progress page, not a French lesson: answer in clear English, with French only for examples.
+
+Every message comes with an <evidence> block: their profile, level estimates, the reviews written after each session (their "exams"), their logged mistakes, their measured speaking speed and their review deck. That is everything you know. The student sees the same figures on the page.
+
+How to answer:
+- Ground every claim in the evidence. Quote their own sentences, name the session and date, give the counts and the words-per-minute figures.
+- Be honest and specific. If they ask why they aren't B1 yet, name the two or three things actually holding them back, with the evidence for each. Don't flatter, and don't hedge into vagueness.
+- Say when the evidence is thin. Two short sessions can't settle a level, and speaking speed measured over a handful of turns is noisy. Never invent a session, a score, an exam result or a mistake that isn't in the evidence.
+- Explain CEFR criteria plainly when asked: what a B1 candidate has to do that an A2 one doesn't, and where they stand against it.
+- Finish with one concrete next step they can take today, unless the question doesn't call for one.
+- Keep it under about 200 words. Plain text: short paragraphs, or lines starting with "- ". No markdown headings, bold or tables.
+
+Set "quizTopic" to a short phrase naming the grammar or vocabulary point worth drilling, e.g. "passé composé vs imparfait" or "object pronouns y and en". Set it whenever the student asks for a quiz or practice, and whenever a drill is the obvious next step. Otherwise set it to null. The student sees it as a button that writes the quiz, so don't write quiz questions yourself.`;
+
+const DAY = 86_400_000;
+
+function coachSpeaking(sessions: Session[]): string {
+  const spoken = sessions.flatMap((s) => s.turns.flatMap((t) => (t.fluency ? [{ at: new Date(t.at).getTime(), fluency: t.fluency }] : [])));
+  if (spoken.length === 0) return "Speaking speed: never measured (no spoken answers yet).";
+  const since = (days: number) => averageFluency(spoken.filter((x) => x.at >= Date.now() - days * DAY).map((x) => x.fluency));
+  const line = (label: string, avg: ReturnType<typeof averageFluency>) =>
+    avg ? `- ${label}: ${avg.wpm} wpm overall, ${avg.articulationWpm} excluding pauses, ${avg.pausesPerMinute} pauses per minute, over ${avg.turns} answers` : `- ${label}: nothing measured`;
+  return `Speaking speed (a pause is 0.4 s or longer):
+${line("Last 7 days", since(7))}
+${line("Previous 7 days", averageFluency(spoken.filter((x) => x.at >= Date.now() - 14 * DAY && x.at < Date.now() - 7 * DAY).map((x) => x.fluency)))}
+${line("Last 30 days", since(30))}
+${line("All time", averageFluency(spoken.map((x) => x.fluency)))}
+Guide for context: roughly ${PACE_GUIDE.map((p) => `${p.level} ${p.range}`).join(", ")} words per minute, with wide individual variation.`;
+}
+
+function coachReviews(sessions: Session[]): string {
+  const reviewed = sessions.filter((s) => s.review).slice(0, 12);
+  if (reviewed.length === 0) return "Session reviews: none yet. No session has been ended with \"End & review\", so there are no level estimates from a transcript.";
+  return `Session reviews, newest first (these are the student's "exams"):
+${reviewed
+    .map((s) => {
+      const r = s.review!;
+      return `- ${s.startedAt.slice(0, 10)} · ${activity(s)} · ${s.turns.filter((t) => t.role === "student").length} student turns
+  Levels: overall ${r.levels.overall} (speaking ${r.levels.speaking}, grammar ${r.levels.grammar}, vocabulary ${r.levels.vocabulary})
+  Summary: ${r.summary}
+  Level notes: ${r.levelNotes}
+  Strengths: ${r.strengths.join("; ") || "none listed"}
+  Focus areas: ${r.focusAreas.join("; ") || "none listed"}
+  Speed note: ${r.fluencyNote || "none"}`;
+    })
+    .join("\n")}`;
+}
+
+export function coachInput(profile: LearnerProfile, sessions: Session[], mistakes: MistakeRecord[], cards: ReviewCard[]): string {
+  const byCategory = new Map<string, number>();
+  for (const m of mistakes) byCategory.set(m.category, (byCategory.get(m.category) ?? 0) + m.count);
+  const categories = [...byCategory].sort((a, b) => b[1] - a[1]).map(([c, n]) => `${CATEGORY_LABELS[c as MistakeRecord["category"]]} ${n}`);
+  const top = [...mistakes]
+    .sort((a, b) => b.count - a.count || b.lastSeen.localeCompare(a.lastSeen))
+    .slice(0, 20)
+    .map((m) => `- ${mistakeLine(m)}, ${m.count}x, last seen ${m.lastSeen.slice(0, 10)}: ${m.explanation}`);
+  const due = cards.filter((c) => c.due <= new Date().toISOString()).length;
+
+  return `<evidence>
+Student: ${profile.name || "name not given"}
+Self-declared level ${profile.currentLevel}, target ${profile.targetLevel}
+Latest estimates from reviews: ${profile.levels ? `overall ${profile.levels.overall}, speaking ${profile.levels.speaking}, grammar ${profile.levels.grammar}, vocabulary ${profile.levels.vocabulary}` : "none yet"}
+Level notes: ${profile.levelNotes || "none"}
+Current focus areas: ${profile.focusAreas.join("; ") || "none"}
+Plan from the last review: ${profile.nextSessionPlan || "none"}
+Goals: ${profile.goals || "not stated"}
+Sessions so far: ${sessions.length} (${sessions.filter((s) => s.review).length} reviewed)
+
+${coachSpeaking(sessions)}
+
+Mistakes logged: ${mistakes.reduce((n, m) => n + m.count, 0)} in total, by type: ${categories.join(", ") || "none"}
+${top.length ? `Most repeated mistakes:
+${top.join("\n")}` : "No individual mistakes logged yet."}
+
+Review deck: ${cards.length} cards, ${due} due now, ${cards.filter((c) => c.intervalDays >= 21).length} well learned.
+
+${coachReviews(sessions)}
+</evidence>`;
 }

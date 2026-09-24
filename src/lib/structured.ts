@@ -14,6 +14,8 @@ export interface StructuredRequest<T extends z.ZodType> {
   system: string;
   messages: ChatMessage[];
   schema: T;
+  /** Cancels the call (and stops spending tokens) when the student interrupts. */
+  signal?: AbortSignal;
 }
 
 /** Plain JSON Schema for Gemini and Ollama, which don't want the "$schema" header. */

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
 import { averageFluency } from "./fluency";
-import type { AppSettings, LearnerProfile, MistakeRecord, ReviewCard, Session, SessionSummary, UsageTotals } from "./types";
+import { END_SILENCE_RANGE, type AppSettings, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
 
 // Single-user app: plain JSON files in ./data are easy to inspect, back up, and edit by hand.
 
@@ -87,10 +87,12 @@ export function defaultSettings(): AppSettings {
       tutor: { provider: "claude", model: config.claude.tutorModel, effort: config.claude.tutorEffort },
       review: { provider: "claude", model: config.claude.reviewModel, effort: config.claude.reviewEffort },
       quiz: { provider: "gemini", model: config.gemini.textModel, effort: "low" },
+      coach: { provider: "claude", model: config.claude.reviewModel, effort: "low" },
     },
     transcription: { engine: "gemini", model: config.gemini.transcribeModel, whisperTiming: true },
     memory: { enabled: true, model: config.ollama.embedModel },
     voice: { provider: "gemini", geminiModel: config.gemini.ttsModel, geminiVoice: config.gemini.ttsVoice, browserVoiceEn: "", browserVoiceFr: "" },
+    conversation: { handsFree: true, endSilenceMs: END_SILENCE_RANGE.default, sensitivity: "medium", bargeIn: true },
     updatedAt: "",
   };
 }
@@ -103,10 +105,14 @@ export async function readSettings(): Promise<AppSettings> {
       tutor: { ...d.models.tutor, ...s.models?.tutor },
       review: { ...d.models.review, ...s.models?.review },
       quiz: { ...d.models.quiz, ...s.models?.quiz },
+      // The level coach arrived later, so an older settings file inherits the review model, which
+      // is already a model this key can use. Chat doesn't need the review's high effort.
+      coach: { ...d.models.coach, ...(s.models?.coach ?? (s.models?.review && { ...s.models.review, effort: "low" })) },
     },
     transcription: { ...d.transcription, ...s.transcription },
     memory: { ...d.memory, ...s.memory },
     voice: { ...d.voice, ...s.voice },
+    conversation: { ...d.conversation, ...s.conversation },
     updatedAt: s.updatedAt ?? d.updatedAt,
   };
 }

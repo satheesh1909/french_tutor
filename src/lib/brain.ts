@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { UserFacingError } from "./http";
 import { generateStructured } from "./llm";
-import { quizPrompt, REVIEW_SYSTEM_PROMPT, reviewInput, tutorSystemPrompt } from "./prompts";
+import { coachInput, COACH_SYSTEM_PROMPT, quizPrompt, REVIEW_SYSTEM_PROMPT, reviewInput, tutorSystemPrompt } from "./prompts";
 import { readSettings } from "./store";
 import type { ChatMessage } from "./structured";
 import {
   CEFR_LEVELS,
   ERROR_CATEGORIES,
   PROVIDER_LABELS,
+  type CoachAnswer,
+  type CoachTurn,
   type LearnerProfile,
   type MistakeRecord,
   type QuizQuestion,
@@ -46,6 +48,11 @@ const ReviewSchema = z.object({
   encouragement: z.string(),
 });
 
+const CoachSchema = z.object({
+  answer: z.string(),
+  quizTopic: z.string().nullable(),
+});
+
 const QuizSchema = z.object({
   questions: z.array(
     z.object({
@@ -71,13 +78,14 @@ function toMessages(session: Session): ChatMessage[] {
   });
 }
 
-export async function generateTutorReply(session: Session): Promise<TutorReply> {
+export async function generateTutorReply(session: Session, signal?: AbortSignal): Promise<TutorReply> {
   const { models } = await readSettings();
   const reply = await generateStructured(models.tutor, {
     feature: "tutor",
     system: tutorSystemPrompt(),
     messages: toMessages(session),
     schema: TutorReplySchema,
+    signal,
   });
   if (!reply.speech.some((s) => s.text.trim())) {
     throw new UserFacingError(
@@ -98,12 +106,18 @@ export async function reviewSession(profile: LearnerProfile, session: Session): 
   });
 }
 
-export async function generateQuiz(profile: LearnerProfile, mistakes: MistakeRecord[], vocab: ReviewCard[], count: number): Promise<QuizQuestion[]> {
+export async function generateQuiz(
+  profile: LearnerProfile,
+  mistakes: MistakeRecord[],
+  vocab: ReviewCard[],
+  count: number,
+  topic?: string | null,
+): Promise<QuizQuestion[]> {
   const { models } = await readSettings();
   const { questions } = await generateStructured(models.quiz, {
     feature: "quiz",
     system: "You are an expert French teacher who writes accurate practice questions. Reply with the requested JSON only.",
-    messages: [{ role: "user", parts: [quizPrompt(profile, mistakes, vocab, count)] }],
+    messages: [{ role: "user", parts: [quizPrompt(profile, mistakes, vocab, count, topic)] }],
     schema: QuizSchema,
   });
   const usable = questions
@@ -122,4 +136,34 @@ export async function generateQuiz(profile: LearnerProfile, mistakes: MistakeRec
     );
   }
   return usable;
+}
+
+/**
+ * Answers the student's questions about their own level, on the Progress page. Everything the
+ * coach knows is in the evidence block: profile, session reviews, mistakes and speaking speed.
+ */
+export async function answerCoachQuestion(
+  profile: LearnerProfile,
+  sessions: Session[],
+  mistakes: MistakeRecord[],
+  cards: ReviewCard[],
+  history: CoachTurn[],
+): Promise<CoachAnswer> {
+  const { models } = await readSettings();
+  const evidence = coachInput(profile, sessions, mistakes, cards);
+  const messages: ChatMessage[] = history.map((turn, i) =>
+    turn.role === "coach" ? { role: "assistant", parts: [turn.text] } : { role: "user", parts: i === 0 ? [evidence, turn.text] : [turn.text] },
+  );
+  // The evidence goes with the first question, so a long conversation keeps one copy of it.
+  if (messages.length > 0 && history[0].role !== "student") messages.unshift({ role: "user", parts: [evidence] });
+
+  const reply = await generateStructured(models.coach, { feature: "coach", system: COACH_SYSTEM_PROMPT, messages, schema: CoachSchema });
+  if (!reply.answer.trim()) {
+    throw new UserFacingError(
+      `${PROVIDER_LABELS[models.coach.provider]} (${models.coach.model}) gave an empty answer. Try again, or choose a stronger model for the level coach in Settings.`,
+      502,
+    );
+  }
+  const quizTopic = reply.quizTopic?.trim();
+  return { answer: reply.answer.trim(), quizTopic: quizTopic ? quizTopic.slice(0, 120) : null };
 }

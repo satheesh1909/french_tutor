@@ -1,20 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   CATEGORY_LABELS,
+  CUSTOM_SCENARIO_ID,
+  GEMINI_VOICES,
   MODE_LABELS,
   PROVIDER_LABELS,
   ROLEPLAY_SCENARIOS,
+  SCENARIO_CATEGORY_LABELS,
   TUTOR_MODES,
+  type ScenarioCategory,
   type AppSettings,
   type ChatTurn,
+  type ConversationSettings,
   type InputMethod,
   type ModelChoice,
   type Provider,
   type Session,
   type SessionReview,
+  type SpeechSegment,
   type TutorMode,
   type VocabItem,
   type VoiceProvider,
@@ -22,7 +28,9 @@ import {
 } from "@/lib/types";
 import { averageFluency, PACE_GUIDE, type FluencyStats } from "@/lib/fluency";
 import { api, errorMessage } from "./api";
+import { clipFromSamples, concatAudio, type RecordedClip } from "./audioClip";
 import { AvatarStage, type StageState } from "./AvatarStage";
+import { VoiceActivityListener, type MicMeter } from "./handsFree";
 import { useRecorder } from "./useRecorder";
 import { speak, type LevelRef } from "./voice";
 
@@ -35,19 +43,92 @@ interface Health {
   uses: Record<Provider, boolean>;
   tutor: ModelChoice;
   voice: VoiceSettings;
+  conversation: ConversationSettings;
   tutorName: string;
 }
 
 const BROWSER_VOICE: VoiceSettings = { provider: "browser", geminiModel: "", geminiVoice: "", browserVoiceEn: "", browserVoiceFr: "" };
 
+interface SendOptions {
+  fluency?: FluencyStats;
+  /** Id for this answer; lets a later, combined answer replace it. */
+  clientTurnId?: string;
+  /** Earlier answers this one replaces (hands-free: the student kept talking). */
+  supersedes?: string[];
+  signal?: AbortSignal;
+}
+
+/** A spoken answer that has been sent but not yet replied to; kept so it can be merged if the student continues. */
+interface PendingAnswer {
+  samples: Float32Array;
+  sampleRate: number;
+  ids: string[];
+  controller: AbortController;
+  endedAt: number;
+}
+
+async function transcribeClip(clip: RecordedClip, signal?: AbortSignal): Promise<{ text: string; fluency?: FluencyStats }> {
+  const res = await fetch("/api/transcribe", {
+    method: "POST",
+    headers: { "content-type": "audio/wav", "x-speech-timing": JSON.stringify(clip.timing) },
+    body: clip.wav,
+    signal,
+  });
+  const data = (await res.json().catch(() => ({}))) as { text?: string; fluency?: FluencyStats | null; error?: string };
+  if (!res.ok) throw new Error(data.error ?? "Transcription failed.");
+  return { text: data.text?.trim() ?? "", fluency: data.fluency ?? undefined };
+}
+
+const NOT_CAUGHT = "I didn't catch that. Try again, a little closer to the mic.";
+
+const VOICE_SAMPLE: SpeechSegment[] = [
+  { lang: "en", text: "Hello! This is how I sound." },
+  { lang: "fr", text: "Et voici ma voix en français : on va bien travailler ensemble !" },
+];
+
+/** Live microphone meter: shows what the app hears and how close the pause is to sending. */
+function MicLevel({ meter, endSilenceMs, paused }: { meter: RefObject<MicMeter>; endSilenceMs: number; paused: boolean }) {
+  const bar = useRef<HTMLDivElement>(null);
+  const fill = useRef<HTMLSpanElement>(null);
+  const mark = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    let raf = 0;
+    let smoothed = 0;
+    const scale = (value: number) => Math.min(1, Math.sqrt(value / 0.15)); // loudness reads better on a curve
+    const tick = () => {
+      const m = meter.current;
+      smoothed += (scale(m.level) - smoothed) * 0.3;
+      fill.current?.style.setProperty("width", `${(smoothed * 100).toFixed(1)}%`);
+      mark.current?.style.setProperty("left", `${(scale(m.threshold) * 100).toFixed(1)}%`);
+      const remaining = m.speaking ? Math.max(0, 1 - m.silenceSec / (endSilenceMs / 1000)) : 1;
+      bar.current?.classList.toggle("mic-level--speech", m.level > m.threshold);
+      bar.current?.style.setProperty("--pause", remaining.toFixed(2));
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+    return () => cancelAnimationFrame(raf);
+  }, [meter, endSilenceMs]);
+
+  return (
+    <div className={`mic-level${paused ? " mic-level--off" : ""}`} ref={bar} title="Microphone level. The marker is the level needed to count as speech.">
+      <span className="mic-level__fill" ref={fill} />
+      <span className="mic-level__mark" ref={mark} />
+    </div>
+  );
+}
+
 export function TutorApp() {
   const [health, setHealth] = useState<Health | null>(null);
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings | null>(null);
+  const [conversation, setConversation] = useState<ConversationSettings | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [review, setReview] = useState<SessionReview | null>(null);
-  const [status, setStatus] = useState<StageState>("idle");
+  const [status, setStatusState] = useState<StageState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [ending, setEnding] = useState(false);
+  const [micPaused, setMicPaused] = useState(false);
 
   const level: LevelRef = useRef(0);
   const speaking = useRef<AbortController | null>(null);
@@ -56,10 +137,31 @@ export function TutorApp() {
   const logEnd = useRef<HTMLDivElement>(null);
   const { recording, start: startRecording, stop: stopRecording, isRecording } = useRecorder(level);
 
+  // The hands-free listener calls back outside React, so it reads the latest values through refs.
+  const statusRef = useRef<StageState>("idle");
+  const sessionRef = useRef<Session | null>(null);
+  const listener = useRef<VoiceActivityListener | null>(null);
+  const meter = useRef<MicMeter>({ level: 0, threshold: 0, speaking: false, silenceSec: 0 });
+  const pending = useRef<PendingAnswer | null>(null);
+  const listenerEvents = useRef({ speechStart: () => {}, utterance: (_s: Float32Array, _r: number) => {}, discard: () => {} });
+
   const tutorName = health?.tutorName ?? "Charlotte";
   const voice = voiceSettings ?? BROWSER_VOICE;
   const busy = status === "thinking" || status === "transcribing";
   const active = session !== null && session.endedAt === null;
+  const transcriptionReady = health?.transcription.ready ?? false;
+  const handsFree = Boolean(conversation?.handsFree && active && !ending && transcriptionReady);
+
+  const setStatus = useCallback((next: StageState) => {
+    statusRef.current = next;
+    setStatusState(next);
+  }, []);
+  /** Where to return when nothing is happening: listening in hands-free mode, idle otherwise. */
+  const settle = useCallback(() => setStatus(listener.current ? "listening" : "idle"), [setStatus]);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   useEffect(() => {
     api
@@ -67,6 +169,7 @@ export function TutorApp() {
       .then((h) => {
         setHealth(h);
         setVoiceSettings(h.voice);
+        setConversation(h.conversation);
       })
       .catch((e) => setError(errorMessage(e)));
   }, []);
@@ -78,6 +181,7 @@ export function TutorApp() {
   const stopSpeaking = useCallback(() => {
     speaking.current?.abort();
     speaking.current = null;
+    if (listener.current) listener.current.tutorSpeaking = false;
   }, []);
 
   const say = useCallback(
@@ -86,17 +190,19 @@ export function TutorApp() {
       stopSpeaking();
       const controller = new AbortController();
       speaking.current = controller;
+      if (listener.current) listener.current.tutorSpeaking = true;
       setStatus("speaking");
       try {
         await speak(turn.reply.speech, voice, level, controller.signal);
       } finally {
         if (speaking.current === controller) {
           speaking.current = null;
-          setStatus("idle");
+          if (listener.current) listener.current.tutorSpeaking = false;
+          settle();
         }
       }
     },
-    [voice, level, stopSpeaking],
+    [voice, level, stopSpeaking, setStatus, settle],
   );
 
   const startSession = useCallback(
@@ -117,36 +223,174 @@ export function TutorApp() {
       if (!opening) return setStatus("idle");
       await say(opening).catch((e) => setError(errorMessage(e)));
     },
-    [say],
+    [say, setStatus],
   );
 
+  /** Sends an answer and plays the reply. Returns quietly if the answer was cancelled because the student kept talking. */
   const send = useCallback(
-    async (text: string, inputMethod: InputMethod, fluency?: FluencyStats) => {
+    async (text: string, inputMethod: InputMethod, options: SendOptions = {}) => {
+      const current = sessionRef.current;
       const trimmed = text.trim();
-      if (!session || !trimmed) return;
+      if (!current || !trimmed) return;
+      const id = options.clientTurnId ?? crypto.randomUUID();
+      const replaced = new Set(options.supersedes ?? []);
+      const isReplaced = (t: ChatTurn) => replaced.has(t.clientTurnId ?? t.id);
       setError(null);
       setStatus("thinking");
-      const pending: ChatTurn = { id: `pending-${Date.now()}`, role: "student", text: trimmed, inputMethod, fluency, at: new Date().toISOString() };
-      setSession((s) => s && { ...s, turns: [...s.turns, pending] });
+      const shown: ChatTurn = { id, clientTurnId: id, role: "student", text: trimmed, inputMethod, fluency: options.fluency, at: new Date().toISOString() };
+      setSession((s) => s && { ...s, turns: [...s.turns.filter((t) => !isReplaced(t)), shown] });
 
       let result: { studentTurn: ChatTurn; tutorTurn: ChatTurn };
       try {
-        result = await api.post("/api/tutor", { sessionId: session.id, text: trimmed, inputMethod, fluency });
+        result = await api.post(
+          "/api/tutor",
+          { sessionId: current.id, text: trimmed, inputMethod, fluency: options.fluency, clientTurnId: id, supersedes: options.supersedes },
+          options.signal,
+        );
       } catch (e) {
-        setSession((s) => s && { ...s, turns: s.turns.filter((t) => t.id !== pending.id) });
+        if (options.signal?.aborted) return; // the combined answer takes over
+        if (pending.current?.ids.includes(id)) pending.current = null;
+        setSession((s) => s && { ...s, turns: s.turns.filter((t) => t.id !== id) });
         setDraft(trimmed); // keep what they said so they can resend it
         setError(errorMessage(e));
-        setStatus("idle");
+        settle();
         return;
       }
-      setSession((s) => s && { ...s, turns: [...s.turns.filter((t) => t.id !== pending.id), result.studentTurn, result.tutorTurn] });
+      if (options.signal?.aborted) return;
+      if (pending.current?.ids.includes(id)) pending.current = null; // answered: no longer mergeable
+      setSession((s) => s && { ...s, turns: [...s.turns.filter((t) => t.id !== id && !isReplaced(t)), result.studentTurn, result.tutorTurn] });
       await say(result.tutorTurn).catch((e) => setError(errorMessage(e)));
     },
-    [session, say],
+    [say, setStatus, settle],
   );
 
+  // ---------------------------------------------------------------------------
+  // Hands-free conversation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A finished spoken answer. If the previous answer is still being processed (the student paused,
+   * then carried on), that processing was cancelled when they started again, and both parts are
+   * sent together as one answer.
+   */
+  const handleUtterance = useCallback(
+    async (samples: Float32Array, sampleRate: number) => {
+      const previous = pending.current;
+      let audio = samples;
+      if (previous) {
+        previous.controller.abort();
+        if (previous.sampleRate === sampleRate) {
+          const startedAt = Date.now() - (samples.length / sampleRate) * 1000;
+          const gapSec = Math.min(1, Math.max(0.3, (startedAt - previous.endedAt) / 1000));
+          audio = concatAudio([previous.samples, new Float32Array(Math.round(gapSec * sampleRate)), samples]);
+        }
+      }
+      const replaces = previous?.ids ?? [];
+      if (audio.length === 0) {
+        pending.current = null;
+        return settle();
+      }
+
+      const id = crypto.randomUUID();
+      const controller = new AbortController();
+      pending.current = { samples: audio, sampleRate, ids: [...replaces, id], controller, endedAt: Date.now() };
+      if (replaces.length) setSession((s) => s && { ...s, turns: s.turns.filter((t) => !replaces.includes(t.clientTurnId ?? t.id)) });
+      setStatus("transcribing");
+      try {
+        const clip = await clipFromSamples(audio, sampleRate);
+        const heard = clip ? await transcribeClip(clip, controller.signal) : { text: "" };
+        if (controller.signal.aborted) return;
+        if (!heard.text) {
+          pending.current = null;
+          setError(NOT_CAUGHT);
+          return settle();
+        }
+        await send(heard.text, "voice", { fluency: heard.fluency, clientTurnId: id, supersedes: replaces, signal: controller.signal });
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        pending.current = null;
+        setError(errorMessage(e));
+        settle();
+      }
+    },
+    [send, setStatus, settle],
+  );
+
+  useEffect(() => {
+    listenerEvents.current = {
+      // The student started talking: stop her voice, pause any processing, and listen.
+      speechStart: () => {
+        if (speaking.current) stopSpeaking();
+        pending.current?.controller.abort();
+        setError(null);
+        setStatus("hearing");
+      },
+      utterance: (samples, rate) => void handleUtterance(samples, rate),
+      // Just a noise. If that noise interrupted an answer in progress, send that answer again.
+      discard: () => {
+        const previous = pending.current;
+        if (previous?.controller.signal.aborted) void handleUtterance(new Float32Array(0), previous.sampleRate);
+        else settle();
+      },
+    };
+  }, [handleUtterance, stopSpeaking, setStatus, settle]);
+
+  useEffect(() => {
+    if (!handsFree || !conversation) return;
+    const created = new VoiceActivityListener({
+      endSilenceMs: conversation.endSilenceMs,
+      sensitivity: conversation.sensitivity,
+      level,
+      meter: meter.current,
+      onSpeechStart: () => listenerEvents.current.speechStart(),
+      onUtterance: (samples, rate) => listenerEvents.current.utterance(samples, rate),
+      onDiscard: () => listenerEvents.current.discard(),
+    });
+    let cancelled = false;
+    created
+      .start()
+      .then(() => {
+        if (cancelled) return created.stop();
+        created.tutorSpeaking = speaking.current !== null;
+        listener.current = created;
+        if (statusRef.current === "idle") setStatus("listening");
+      })
+      .catch((e) => {
+        created.stop();
+        if (!cancelled) setError(`Microphone unavailable: ${errorMessage(e)}`);
+      });
+    return () => {
+      cancelled = true;
+      created.stop();
+      if (listener.current === created) listener.current = null;
+      if (statusRef.current === "listening" || statusRef.current === "hearing") setStatus("idle");
+    };
+    // Restart only when hands-free turns on or off; other changes are applied below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handsFree]);
+
+  useEffect(() => {
+    const l = listener.current;
+    if (!l || !conversation) return;
+    l.update({ endSilenceMs: conversation.endSilenceMs, sensitivity: conversation.sensitivity });
+    l.allowInterrupt = conversation.bargeIn;
+    l.paused = micPaused;
+  }, [conversation, micPaused, status]);
+
+  const changeConversation = useCallback((changes: Partial<ConversationSettings>) => {
+    setConversation((c) => c && { ...c, ...changes });
+    api
+      .put<{ settings: AppSettings }>("/api/settings", { conversation: changes })
+      .then((r) => setConversation(r.settings.conversation))
+      .catch((e) => setError(errorMessage(e)));
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Push-to-talk (hands-free off)
+  // ---------------------------------------------------------------------------
+
   const startListening = useCallback(async () => {
-    if (!active || busy || wantsMic.current) return;
+    if (!active || busy || wantsMic.current || handsFree) return;
     wantsMic.current = true;
     stopSpeaking();
     setError(null);
@@ -164,7 +408,7 @@ export function TutorApp() {
       return;
     }
     setStatus("listening");
-  }, [active, busy, stopSpeaking, startRecording, stopRecording]);
+  }, [active, busy, handsFree, stopSpeaking, startRecording, stopRecording, setStatus]);
 
   const stopListening = useCallback(async () => {
     wantsMic.current = false;
@@ -173,29 +417,23 @@ export function TutorApp() {
     try {
       const clip = await stopRecording();
       if (!clip) return setStatus("idle");
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        headers: { "content-type": "audio/wav", "x-speech-timing": JSON.stringify(clip.timing) },
-        body: clip.wav,
-      });
-      const data = (await res.json().catch(() => ({}))) as { text?: string; fluency?: FluencyStats | null; error?: string };
-      if (!res.ok) throw new Error(data.error ?? "Transcription failed.");
-      if (!data.text) {
-        setError("I didn't catch that. Try again, a little closer to the mic.");
+      const heard = await transcribeClip(clip);
+      if (!heard.text) {
+        setError(NOT_CAUGHT);
         return setStatus("idle");
       }
-      await send(data.text, "voice", data.fluency ?? undefined);
+      await send(heard.text, "voice", { fluency: heard.fluency });
     } catch (e) {
       setError(errorMessage(e));
       setStatus("idle");
     }
-  }, [isRecording, stopRecording, send]);
+  }, [isRecording, stopRecording, send, setStatus]);
 
   const toggleMic = () => void (wantsMic.current ? stopListening() : startListening());
 
-  // Hold Space to talk (unless typing in a field).
+  // Hold Space to talk (unless typing in a field). Not needed in hands-free mode.
   useEffect(() => {
-    if (!active) return;
+    if (!active || handsFree) return;
     const typing = (el: EventTarget | null) =>
       el instanceof HTMLElement && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.tagName === "SELECT" || el.isContentEditable);
     const down = (e: KeyboardEvent) => {
@@ -214,16 +452,20 @@ export function TutorApp() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [active, startListening, stopListening]);
+  }, [active, handsFree, startListening, stopListening]);
 
   const endSession = useCallback(async () => {
     if (!session) return;
+    setEnding(true); // switches hands-free listening off
     stopSpeaking();
+    pending.current?.controller.abort();
+    pending.current = null;
     wantsMic.current = false;
     if (isRecording()) await stopRecording();
     setError(null);
     if (!session.turns.some((t) => t.role === "student")) {
       setSession(null);
+      setEnding(false);
       return setStatus("idle");
     }
     setStatus("thinking");
@@ -234,17 +476,41 @@ export function TutorApp() {
     } catch (e) {
       setError(errorMessage(e));
     } finally {
+      setEnding(false);
       setStatus("idle");
     }
-  }, [session, stopSpeaking, isRecording, stopRecording]);
+  }, [session, stopSpeaking, isRecording, stopRecording, setStatus]);
 
-  const changeVoice = useCallback((provider: VoiceProvider) => {
-    setVoiceSettings((v) => v && { ...v, provider });
+  const changeVoice = useCallback((patch: Partial<VoiceSettings>) => {
+    setVoiceSettings((v) => v && { ...v, ...patch });
     api
-      .put<{ settings: AppSettings }>("/api/settings", { voice: { provider } })
+      .put<{ settings: AppSettings }>("/api/settings", { voice: patch })
       .then((r) => setVoiceSettings(r.settings.voice))
       .catch((e) => setError(errorMessage(e)));
   }, []);
+
+  /** Plays a short sample so a voice can be tried before (and after) choosing it. */
+  const previewVoice = useCallback(
+    async (geminiVoice?: string) => {
+      stopSpeaking();
+      const controller = new AbortController();
+      speaking.current = controller;
+      if (listener.current) listener.current.tutorSpeaking = true;
+      setStatus("speaking");
+      try {
+        await speak(VOICE_SAMPLE, geminiVoice ? { ...voice, provider: "gemini", geminiVoice } : voice, level, controller.signal);
+      } catch (e) {
+        setError(errorMessage(e));
+      } finally {
+        if (speaking.current === controller) {
+          speaking.current = null;
+          if (listener.current) listener.current.tutorSpeaking = false;
+          settle();
+        }
+      }
+    },
+    [voice, level, stopSpeaking, setStatus, settle],
+  );
 
   const submitDraft = () => {
     if (!draft.trim() || busy) return;
@@ -270,7 +536,7 @@ export function TutorApp() {
                 className="btn btn--ghost"
                 onClick={() => {
                   stopSpeaking();
-                  setStatus("idle");
+                  settle();
                 }}
               >
                 Stop speaking
@@ -295,14 +561,45 @@ export function TutorApp() {
         ) : (
           <SessionPicker busy={busy} onStart={(m, s, t) => void startSession(m, s, t)} />
         )}
-        <div className="voice-toggle" role="radiogroup" aria-label="Tutor voice">
-          <span className="voice-toggle__label">Voice</span>
-          <button className="seg-btn" role="radio" aria-checked={voice.provider === "gemini"} onClick={() => changeVoice("gemini")} disabled={health?.gemini === false}>
-            Gemini
-          </button>
-          <button className="seg-btn" role="radio" aria-checked={voice.provider === "browser"} onClick={() => changeVoice("browser")}>
-            Browser
-          </button>
+        <div className="voice-picker">
+          <div className="voice-toggle" role="radiogroup" aria-label="Tutor voice">
+            <span className="voice-toggle__label">Voice</span>
+            <button
+              className="seg-btn"
+              role="radio"
+              aria-checked={voice.provider === "gemini"}
+              onClick={() => changeVoice({ provider: "gemini" })}
+              disabled={health?.gemini === false}
+            >
+              Gemini
+            </button>
+            <button className="seg-btn" role="radio" aria-checked={voice.provider === "browser"} onClick={() => changeVoice({ provider: "browser" })}>
+              Browser
+            </button>
+          </div>
+          {voice.provider === "gemini" && (
+            <div className="voice-picker__row">
+              <select
+                className="input"
+                aria-label="Gemini voice"
+                value={voice.geminiVoice}
+                onChange={(e) => {
+                  const geminiVoice = e.target.value;
+                  changeVoice({ geminiVoice });
+                  void previewVoice(geminiVoice);
+                }}
+              >
+                {GEMINI_VOICES.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} · {v.style}
+                  </option>
+                ))}
+              </select>
+              <button className="btn btn--ghost" onClick={() => (status === "speaking" ? (stopSpeaking(), settle()) : void previewVoice())}>
+                {status === "speaking" ? "Stop" : "Hear"}
+              </button>
+            </div>
+          )}
         </div>
         {health && (
           <p className="brain-tag">
@@ -339,15 +636,34 @@ export function TutorApp() {
           </div>
         )}
         <div className="composer">
-          <button
-            className={`mic${recording ? " mic--on" : ""}`}
-            onClick={toggleMic}
-            disabled={!active || (busy && !recording) || health?.transcription.ready === false}
-            aria-pressed={recording}
-          >
-            <MicIcon />
-            <span>{recording ? "Done" : "Speak"}</span>
-          </button>
+          {handsFree ? (
+            <button
+              className={`mic mic--live${micPaused ? " mic--paused" : status === "hearing" ? " mic--on" : ""}`}
+              onClick={() => setMicPaused((p) => !p)}
+              aria-pressed={!micPaused}
+              title={micPaused ? "Resume listening" : "Pause listening"}
+            >
+              <MicIcon />
+              <span>{micPaused ? "Paused" : status === "hearing" ? "Hearing you" : "Listening"}</span>
+            </button>
+          ) : null}
+          {handsFree && <MicLevel meter={meter} endSilenceMs={conversation?.endSilenceMs ?? 2000} paused={micPaused} />}
+          {handsFree && status === "hearing" && (
+            <button className="btn btn--ghost" onClick={() => listener.current?.finishNow()} title="Don't wait for the pause">
+              Send now
+            </button>
+          )}
+          {!handsFree && (
+            <button
+              className={`mic${recording ? " mic--on" : ""}`}
+              onClick={toggleMic}
+              disabled={!active || (busy && !recording) || !transcriptionReady}
+              aria-pressed={recording}
+            >
+              <MicIcon />
+              <span>{recording ? "Done" : "Speak"}</span>
+            </button>
+          )}
           <textarea
             className="input"
             rows={1}
@@ -368,15 +684,28 @@ export function TutorApp() {
             Send
           </button>
         </div>
-        <p className="hint">
-          {active ? (
-            <>
-              Click <strong>Speak</strong> or hold <kbd>Space</kbd> to talk. <kbd>Enter</kbd> sends a typed message.
-            </>
-          ) : (
-            "Your sessions, mistakes and progress are saved on this computer."
+        <div className="hint-row">
+          <p className="hint">
+            {!active ? (
+              "Your sessions, mistakes and progress are saved on this computer."
+            ) : handsFree ? (
+              <>
+                Just speak. Your answer is sent after a {((conversation?.endSilenceMs ?? 2000) / 1000).toFixed(1)} s pause
+                {conversation?.bargeIn ? `, and you can talk over ${tutorName} to interrupt` : ""}. Headphones work best.
+              </>
+            ) : (
+              <>
+                Click <strong>Speak</strong> or hold <kbd>Space</kbd> to talk. <kbd>Enter</kbd> sends a typed message.
+              </>
+            )}
+          </p>
+          {conversation && (
+            <label className="switch small">
+              <input type="checkbox" checked={conversation.handsFree} onChange={(e) => changeConversation({ handsFree: e.target.checked })} />
+              <span>Hands-free</span>
+            </label>
           )}
-        </p>
+        </div>
       </section>
 
       <aside className="panel tutor__feedback">
@@ -385,6 +714,26 @@ export function TutorApp() {
     </div>
   );
 }
+
+/** The scenario list, split into the groups shown in the picker. */
+const SCENARIO_GROUPS: [ScenarioCategory, typeof ROLEPLAY_SCENARIOS][] = (["everyday", "work"] as ScenarioCategory[]).map((category) => [
+  category,
+  ROLEPLAY_SCENARIOS.filter((s) => s.category === category),
+]);
+
+const TOPIC_LABELS = {
+  conversation: "Topic (optional)",
+  lesson: "Grammar point (optional)",
+  roleplay: "The situation",
+  roleplay_detail: "Anything to add (optional)",
+} as const;
+
+const TOPIC_HINTS = {
+  conversation: "e.g. my job, travel, cooking",
+  lesson: "e.g. passé composé vs imparfait",
+  roleplay: "e.g. I chair a project call with a supplier who is late",
+  roleplay_detail: "e.g. I'm a data engineer, the client is in Lyon",
+} as const;
 
 function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: TutorMode, scenarioId: string | null, topic: string | null) => void }) {
   const [mode, setMode] = useState<TutorMode>("conversation");
@@ -407,27 +756,38 @@ function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: Tutor
         <label className="field">
           <span>Scenario</span>
           <select className="input" value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
-            {ROLEPLAY_SCENARIOS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.title} · {s.level}
-              </option>
+            {SCENARIO_GROUPS.map(([category, scenarios]) => (
+              <optgroup key={category} label={SCENARIO_CATEGORY_LABELS[category]}>
+                {scenarios.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title} · {s.level}
+                  </option>
+                ))}
+              </optgroup>
             ))}
+            <optgroup label="Your own">
+              <option value={CUSTOM_SCENARIO_ID}>Describe a situation…</option>
+            </optgroup>
           </select>
           {scenario && <span className="small">{scenario.brief}</span>}
         </label>
       )}
-      {(mode === "conversation" || mode === "lesson") && (
+      {(mode === "conversation" || mode === "lesson" || mode === "roleplay") && (
         <label className="field">
-          <span>{mode === "lesson" ? "Grammar point (optional)" : "Topic (optional)"}</span>
+          <span>{TOPIC_LABELS[mode === "roleplay" && scenario ? "roleplay_detail" : mode]}</span>
           <input
             className="input"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
-            placeholder={mode === "lesson" ? "e.g. passé composé vs imparfait" : "e.g. my job, travel, cooking"}
+            placeholder={TOPIC_HINTS[mode === "roleplay" && scenario ? "roleplay_detail" : mode]}
           />
         </label>
       )}
-      <button className="btn btn--primary" disabled={busy} onClick={() => onStart(mode, mode === "roleplay" ? scenarioId : null, topic.trim() || null)}>
+      <button
+        className="btn btn--primary"
+        disabled={busy || (mode === "roleplay" && scenarioId === CUSTOM_SCENARIO_ID && !topic.trim())}
+        onClick={() => onStart(mode, mode === "roleplay" ? scenarioId : null, topic.trim() || null)}
+      >
         {busy ? "Starting…" : "Commencer"}
       </button>
     </div>

@@ -27,6 +27,7 @@ export async function GET() {
     },
     tutor: settings.models.tutor,
     voice: settings.voice,
+    conversation: settings.conversation,
     tutorName: config.tutorName,
   });
 }

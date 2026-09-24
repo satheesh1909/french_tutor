@@ -33,6 +33,7 @@ export async function geminiStructured<T extends z.ZodType>(req: StructuredReque
       systemInstruction: req.system,
       responseMimeType: "application/json",
       responseJsonSchema: jsonSchemaFor(req.schema),
+      abortSignal: req.signal,
     },
   });
   recordGeminiUsage(req.model, req.feature, response.usageMetadata);

@@ -4,16 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BRAIN_JOBS,
   EFFORTS,
+  END_SILENCE_RANGE,
   FEATURE_LABELS,
   GEMINI_VOICES,
   JOB_LABELS,
+  MIC_SENSITIVITIES,
   nearestEffort,
   PROVIDERS,
   PROVIDER_LABELS,
   USAGE_PROVIDER_LABELS,
   type AppSettings,
   type BrainJob,
+  type ConversationSettings,
   type Effort,
+  type MicSensitivity,
   type ModelChoice,
   type Provider,
   type SettingsOptions,
@@ -170,6 +174,8 @@ export function SettingsApp() {
           </div>
         </div>
       </section>
+
+      <ConversationPanel value={settings.conversation} onChange={(conversation) => update((s) => ({ ...s, conversation }))} />
 
       <VoicePanel voice={settings.voice} options={options} onChange={(voice) => update((s) => ({ ...s, voice }))} />
 
@@ -391,6 +397,70 @@ function TranscriptionRow({
   );
 }
 
+const SENSITIVITY_LABELS: Record<MicSensitivity, string> = {
+  low: "Low (noisy room)",
+  medium: "Medium",
+  high: "High (quiet voice)",
+};
+
+function ConversationPanel({ value, onChange }: { value: ConversationSettings; onChange: (v: ConversationSettings) => void }) {
+  const set = (patch: Partial<ConversationSettings>) => onChange({ ...value, ...patch });
+  return (
+    <section className="panel">
+      <h2 className="section-title">Conversation</h2>
+      <label className="switch">
+        <input type="checkbox" checked={value.handsFree} onChange={(e) => set({ handsFree: e.target.checked })} />
+        <span>
+          <strong>Hands-free:</strong> the microphone stays on during a session and your answer is sent automatically when you pause. Turn off to use
+          the Speak button or hold Space instead.
+        </span>
+      </label>
+      <label className="field">
+        <span>
+          Send my answer after a pause of <strong>{(value.endSilenceMs / 1000).toFixed(1)} s</strong>
+        </span>
+        <input
+          type="range"
+          min={END_SILENCE_RANGE.min}
+          max={END_SILENCE_RANGE.max}
+          step={100}
+          value={value.endSilenceMs}
+          disabled={!value.handsFree}
+          onChange={(e) => set({ endSilenceMs: Number(e.target.value) })}
+        />
+        <span className="small">
+          Longer gives you time to think mid-sentence. If you carry on after your answer was sent, the tutor waits and treats it all as one answer.
+        </span>
+      </label>
+      <div className="field">
+        <span>Microphone sensitivity</span>
+        <div className="segmented" role="radiogroup" aria-label="Microphone sensitivity">
+          {MIC_SENSITIVITIES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              role="radio"
+              className="seg-btn"
+              aria-checked={value.sensitivity === s}
+              disabled={!value.handsFree}
+              onClick={() => set({ sensitivity: s })}
+            >
+              {SENSITIVITY_LABELS[s]}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label className="switch">
+        <input type="checkbox" checked={value.bargeIn} disabled={!value.handsFree} onChange={(e) => set({ bargeIn: e.target.checked })} />
+        <span>
+          <strong>Let me interrupt:</strong> speaking while the tutor talks stops her and she listens. With speakers instead of headphones, she may
+          hear herself; turn this off if she keeps stopping mid-sentence.
+        </span>
+      </label>
+    </section>
+  );
+}
+
 const PREVIEW: SpeechSegment[] = [
   { lang: "en", text: "Hello! I'm your French tutor. Shall we practise a little today?" },
   { lang: "fr", text: "Bonjour ! Aujourd'hui, on va parler de ton week-end. Tu es prêt ?" },
@@ -398,12 +468,13 @@ const PREVIEW: SpeechSegment[] = [
 
 function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; options: SettingsOptions; onChange: (v: VoiceSettings) => void }) {
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [previewing, setPreviewing] = useState(false);
-  const playing = useRef<AbortController | null>(null);
+  /** Which voice is playing right now: a Gemini voice name, "current", or null. */
+  const [playing, setPlaying] = useState<string | null>(null);
+  const player = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if ("speechSynthesis" in window) void loadVoices(window.speechSynthesis).then(setBrowserVoices);
-    return () => playing.current?.abort();
+    return () => player.current?.abort();
   }, []);
 
   const set = (patch: Partial<VoiceSettings>) => onChange({ ...voice, ...patch });
@@ -414,22 +485,24 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
   const english = byLocale("en", "en-gb");
   const french = byLocale("fr", "fr-fr");
 
-  const togglePreview = async () => {
-    if (playing.current) {
-      playing.current.abort();
-      playing.current = null;
-      setPreviewing(false);
-      return;
-    }
+  /** Plays the sample in one voice. Passing a voice name tries it without selecting it. */
+  const togglePreview = async (geminiVoice?: string) => {
+    const key = geminiVoice ?? "current";
+    const wasPlaying = playing;
+    player.current?.abort();
+    player.current = null;
+    setPlaying(null);
+    if (wasPlaying === key) return; // pressing the same button again stops it
+
     const controller = new AbortController();
-    playing.current = controller;
-    setPreviewing(true);
+    player.current = controller;
+    setPlaying(key);
     try {
-      await speak(PREVIEW, voice, { current: 0 }, controller.signal);
+      await speak(PREVIEW, geminiVoice ? { ...voice, provider: "gemini", geminiVoice } : voice, { current: 0 }, controller.signal);
     } finally {
-      if (playing.current === controller) {
-        playing.current = null;
-        setPreviewing(false);
+      if (player.current === controller) {
+        player.current = null;
+        setPlaying(null);
       }
     }
   };
@@ -449,17 +522,34 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
       </div>
 
       {voice.provider === "gemini" ? (
-        <div className="field-row">
-          <label className="field">
-            <span>Voice</span>
-            <select className="input" value={voice.geminiVoice} onChange={(e) => set({ geminiVoice: e.target.value })}>
+        <>
+          <div className="field">
+            <span>Voice — press play to hear one before choosing it</span>
+            <div className="voice-grid" role="radiogroup" aria-label="Gemini voice">
               {GEMINI_VOICES.map((v) => (
-                <option key={v.name} value={v.name}>
-                  {v.name}: {v.style}
-                </option>
+                <div key={v.name} className={`voice-option${voice.geminiVoice === v.name ? " voice-option--active" : ""}`}>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={voice.geminiVoice === v.name}
+                    className="voice-option__pick"
+                    onClick={() => set({ geminiVoice: v.name })}
+                  >
+                    <strong>{v.name}</strong>
+                    <span>{v.style}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="voice-option__play"
+                    aria-label={playing === v.name ? `Stop ${v.name}` : `Hear ${v.name}`}
+                    onClick={() => void togglePreview(v.name)}
+                  >
+                    {playing === v.name ? "■" : "▶"}
+                  </button>
+                </div>
               ))}
-            </select>
-          </label>
+            </div>
+          </div>
           <label className="field">
             <span>Voice model</span>
             <select className="input" value={voice.geminiModel} onChange={(e) => set({ geminiModel: e.target.value })}>
@@ -473,7 +563,7 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
               ))}
             </select>
           </label>
-        </div>
+        </>
       ) : (
         <div className="field-row">
           <label className="field">
@@ -503,7 +593,7 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
 
       <div className="row">
         <button type="button" className="btn" onClick={() => void togglePreview()}>
-          {previewing ? "Stop" : "Preview voice"}
+          {playing === "current" ? "Stop" : "Preview the chosen voice"}
         </button>
         <span className="small muted">
           Plays a short English and French sample{voice.provider === "gemini" ? " and uses a few Gemini tokens" : ""}. You can preview before saving.

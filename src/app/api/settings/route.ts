@@ -8,10 +8,13 @@ import { readSettings, withLock, writeSettings } from "@/lib/store";
 import {
   BRAIN_JOBS,
   EFFORTS,
+  END_SILENCE_RANGE,
   GEMINI_VOICES,
+  MIC_SENSITIVITIES,
   PROVIDERS,
   type AppSettings,
   type Effort,
+  type MicSensitivity,
   type ModelChoice,
   type Provider,
   type SettingsOptions,
@@ -82,6 +85,7 @@ export async function PUT(req: Request) {
       for (const job of BRAIN_JOBS) models[job] = choice(input.models?.[job], current.models[job]);
       const v = input.voice ?? {};
       const t = input.transcription ?? {};
+      const c = input.conversation ?? {};
       const next: AppSettings = {
         models,
         transcription: {
@@ -100,6 +104,15 @@ export async function PUT(req: Request) {
           // Empty string is meaningful here: "choose automatically".
           browserVoiceEn: typeof v.browserVoiceEn === "string" ? v.browserVoiceEn.slice(0, 200) : current.voice.browserVoiceEn,
           browserVoiceFr: typeof v.browserVoiceFr === "string" ? v.browserVoiceFr.slice(0, 200) : current.voice.browserVoiceFr,
+        },
+        conversation: {
+          handsFree: typeof c.handsFree === "boolean" ? c.handsFree : current.conversation.handsFree,
+          endSilenceMs:
+            typeof c.endSilenceMs === "number" && Number.isFinite(c.endSilenceMs)
+              ? Math.round(Math.min(END_SILENCE_RANGE.max, Math.max(END_SILENCE_RANGE.min, c.endSilenceMs)))
+              : current.conversation.endSilenceMs,
+          sensitivity: MIC_SENSITIVITIES.includes(c.sensitivity as MicSensitivity) ? (c.sensitivity as MicSensitivity) : current.conversation.sensitivity,
+          bargeIn: typeof c.bargeIn === "boolean" ? c.bargeIn : current.conversation.bargeIn,
         },
         updatedAt: new Date().toISOString(),
       };

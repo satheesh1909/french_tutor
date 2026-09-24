@@ -1,20 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   CATEGORY_LABELS,
   CEFR_LEVELS,
   MODE_LABELS,
   ROLEPLAY_SCENARIOS,
+  type AppSettings,
   type CefrLevel,
+  type CoachAnswer,
+  type CoachTurn,
   type ErrorCategory,
   type LearnerProfile,
   type MistakeRecord,
+  type QuizQuestion,
   type SessionSummary,
+  type VoiceSettings,
 } from "@/lib/types";
 import { PACE_GUIDE, type FluencyAverage } from "@/lib/fluency";
 import { api, errorMessage } from "./api";
+import { QuizPlayer } from "./QuizPlayer";
+import { speak } from "./voice";
 import { formatDate } from "./format";
 
 interface ProgressData {
@@ -89,6 +96,8 @@ export function ProgressApp() {
           </>
         )}
       </section>
+
+      <CoachPanel reviewed={data.sessions.filter((s) => s.review).length} />
 
       <SpeakingPanel speaking={data.speaking} />
 
@@ -183,6 +192,199 @@ export function ProgressApp() {
         <ProfileForm profile={profile} onSaved={(p) => setData((d) => d && { ...d, profile: p })} />
       </section>
     </div>
+  );
+}
+
+/** The coach is asked for plain text, but models reach for **bold** anyway, so render that much. */
+function CoachText({ text }: { text: string }) {
+  const parts = text.split("**");
+  if (parts.length < 3 || parts.length % 2 === 0) return <>{text}</>;
+  return <>{parts.map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : part))}</>;
+}
+
+const STARTER_QUESTIONS = [
+  "Where am I really — A2 or B1?",
+  "What is stopping me from reaching B1?",
+  "How did my last level check go?",
+  "What should I practise this week?",
+  "Is my speaking speed normal for my level?",
+];
+
+/** Ask the examiner about your own level, and turn the answer into a quiz. */
+function CoachPanel({ reviewed }: { reviewed: number }) {
+  const [turns, setTurns] = useState<CoachTurn[]>([]);
+  const [draft, setDraft] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [suggested, setSuggested] = useState<string | null>(null);
+  const [topic, setTopic] = useState("");
+  const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
+  const [quizNo, setQuizNo] = useState(0);
+  const [quizTopic, setQuizTopic] = useState<string | null>(null);
+  const [quizBusy, setQuizBusy] = useState(false);
+  const log = useRef<HTMLDivElement>(null);
+  const [voice, setVoice] = useState<VoiceSettings | null>(null);
+  const playing = useRef<AbortController | null>(null);
+
+  // Only so quiz answers can be heard, the same as on the Practice page.
+  useEffect(() => {
+    api
+      .get<{ settings: AppSettings }>("/api/settings?options=false")
+      .then((r) => setVoice(r.settings.voice))
+      .catch(() => undefined);
+  }, []);
+
+  const listen = useCallback(
+    (text: string) => {
+      if (!voice) return;
+      playing.current?.abort();
+      const controller = new AbortController();
+      playing.current = controller;
+      speak([{ lang: "fr", text }], voice, { current: 0 }, controller.signal).catch(() => undefined);
+    },
+    [voice],
+  );
+
+  const ask = async (question: string) => {
+    const text = question.trim();
+    if (!text || asking) return;
+    const history: CoachTurn[] = [...turns, { role: "student", text }];
+    setTurns(history);
+    setDraft("");
+    setSuggested(null);
+    setAsking(true);
+    setError(null);
+    try {
+      const answer = await api.post<CoachAnswer>("/api/coach", { messages: history });
+      setTurns([...history, { role: "coach", text: answer.answer }]);
+      setSuggested(answer.quizTopic);
+    } catch (e) {
+      setError(errorMessage(e));
+      setTurns(history.slice(0, -1));
+      setDraft(text);
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  const makeQuiz = async (focus: string | null) => {
+    setQuizBusy(true);
+    setError(null);
+    try {
+      const { questions: fresh } = await api.post<{ questions: QuizQuestion[] }>("/api/quiz", { count: 8, topic: focus });
+      setQuestions(fresh);
+      setQuizTopic(focus);
+      setQuizNo((n) => n + 1);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setQuizBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    log.current?.scrollTo({ top: log.current.scrollHeight, behavior: "smooth" });
+  }, [turns, asking]);
+
+  return (
+    <section className="panel">
+      <h2 className="section-title">Ask about your level</h2>
+      {turns.length === 0 && (
+        <p className="muted">
+          {reviewed === 0
+            ? "Your coach reads the review written at the end of each session. You have none yet — finish a session with “End & review”, ideally a Level check, and then ask away. Quizzes work already."
+            : `Put your questions to a DELF examiner who has read all ${reviewed} of your session reviews, every mistake you have logged and your measured speaking speed. Answers are in English.`}
+        </p>
+      )}
+      {turns.length > 0 && (
+        <div className="coach__log" ref={log}>
+          {turns.map((t, i) => (
+            <div key={i} className={`turn turn--${t.role === "student" ? "student" : "tutor"}`}>
+              <div className={`bubble bubble--${t.role === "student" ? "student" : "tutor"}`}>
+                {t.role === "coach" ? <CoachText text={t.text} /> : t.text}
+              </div>
+            </div>
+          ))}
+          {asking && (
+            <div className="turn turn--tutor">
+              <div className="bubble bubble--tutor typing" aria-label="Thinking">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {error && <div className="alert">{error}</div>}
+      <form
+        className="composer"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void ask(draft);
+        }}
+      >
+        <input
+          className="input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={turns.length ? "Ask something else" : "Am I ready for B1?"}
+          aria-label="Your question"
+        />
+        <button className="btn btn--primary" disabled={asking || !draft.trim()}>
+          {asking ? "Thinking…" : "Ask"}
+        </button>
+      </form>
+      {turns.length === 0 && (
+        <div className="coach__starters">
+          {STARTER_QUESTIONS.map((q) => (
+            <button key={q} className="starter" onClick={() => void ask(q)} disabled={asking}>
+              {q}
+            </button>
+          ))}
+        </div>
+      )}
+      {suggested && (
+        <div className="row">
+          <button className="btn btn--primary" disabled={quizBusy} onClick={() => void makeQuiz(suggested)}>
+            {quizBusy ? "Writing your quiz…" : `Quiz me on ${suggested}`}
+          </button>
+        </div>
+      )}
+      <details className="coach__quiz">
+        <summary>Quiz me on something else</summary>
+        <div className="row">
+          <input
+            className="input"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="e.g. the subjonctif after il faut que"
+            aria-label="Quiz topic"
+          />
+          <button className="btn" disabled={quizBusy} onClick={() => void makeQuiz(topic.trim() || null)}>
+            {quizBusy ? "Writing…" : topic.trim() ? "Make this quiz" : "Quiz my weak spots"}
+          </button>
+        </div>
+      </details>
+      {questions && questions.length > 0 && (
+        <>
+          <h3 className="subhead">{quizTopic ? `Quiz: ${quizTopic}` : "Quiz on your weak spots"}</h3>
+          <QuizPlayer
+            key={quizNo}
+            questions={questions}
+            listen={voice ? listen : undefined}
+            onNew={() => void makeQuiz(quizTopic)}
+            newLabel="Another quiz"
+            busy={quizBusy}
+            footer={
+              <button className="btn btn--ghost" onClick={() => setQuestions(null)}>
+                Close
+              </button>
+            }
+          />
+        </>
+      )}
+    </section>
   );
 }
 

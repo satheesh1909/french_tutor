@@ -84,7 +84,7 @@ export async function claudeStructured<T extends z.ZodType>(req: StructuredReque
     cache_control: { type: "ephemeral" },
     output_config: { ...(effort ? { effort } : {}), format: betaZodOutputFormat(req.schema) },
     ...fallbacks(req.model),
-  });
+  }, { signal: req.signal });
   const response = await stream.finalMessage();
 
   const u = response.usage;

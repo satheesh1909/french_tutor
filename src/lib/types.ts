@@ -97,6 +97,8 @@ export interface ChatTurn {
   inputMethod?: InputMethod;
   /** Speaking speed for spoken turns. */
   fluency?: FluencyStats;
+  /** Id the browser gave this answer, so an interrupted answer can be replaced by the combined one. */
+  clientTurnId?: string;
   /** Learner context sent alongside this turn. Stored so the replayed history stays byte-identical for prompt caching. */
   context?: string;
   reply?: TutorReply;
@@ -194,12 +196,35 @@ export interface QuizQuestion {
   category: ErrorCategory;
 }
 
+export type ScenarioCategory = "everyday" | "work";
+
+export const SCENARIO_CATEGORY_LABELS: Record<ScenarioCategory, string> = {
+  everyday: "Everyday life",
+  work: "At the office",
+};
+
+/** One turn of the Progress-page conversation about the student's level. */
+export interface CoachTurn {
+  role: "student" | "coach";
+  text: string;
+}
+
+export interface CoachAnswer {
+  answer: string;
+  /** Set when the answer points at something worth drilling, e.g. "passé composé vs imparfait". */
+  quizTopic: string | null;
+}
+
 export interface RoleplayScenario {
   id: string;
   title: string;
   level: CefrLevel;
+  category: ScenarioCategory;
   brief: string;
 }
+
+/** Picked in the session picker to role-play a situation the student describes in their own words. */
+export const CUSTOM_SCENARIO_ID = "custom";
 
 // ---------------------------------------------------------------------------
 // Settings: which AI does which job, and how the tutor sounds
@@ -232,13 +257,14 @@ export interface ModelChoice {
   effort: Effort;
 }
 
-export const BRAIN_JOBS = ["tutor", "review", "quiz"] as const;
+export const BRAIN_JOBS = ["tutor", "review", "quiz", "coach"] as const;
 export type BrainJob = (typeof BRAIN_JOBS)[number];
 
 export const JOB_LABELS: Record<BrainJob, { title: string; description: string }> = {
   tutor: { title: "Tutor conversation", description: "Replies, corrections and explanations during sessions" },
   review: { title: "Session review", description: "Level estimates and focus areas when a session ends" },
   quiz: { title: "Quiz writer", description: "Written quizzes on the Practice page" },
+  coach: { title: "Level coach", description: "Answers questions about your level and progress on the Progress page" },
 };
 
 export interface VoiceSettings {
@@ -252,12 +278,28 @@ export interface VoiceSettings {
 
 export type TranscriptionEngine = "gemini" | "whisper";
 
+export const MIC_SENSITIVITIES = ["low", "medium", "high"] as const;
+export type MicSensitivity = (typeof MIC_SENSITIVITIES)[number];
+
+export interface ConversationSettings {
+  /** Keep the microphone open and send each answer automatically after a pause. */
+  handsFree: boolean;
+  /** How long a silence ends your turn. */
+  endSilenceMs: number;
+  sensitivity: MicSensitivity;
+  /** Starting to speak while the tutor talks stops her. */
+  bargeIn: boolean;
+}
+
+export const END_SILENCE_RANGE = { min: 800, max: 4000, default: 2000 };
+
 export interface AppSettings {
   models: Record<BrainJob, ModelChoice>;
   /** `model` is the Gemini model; Whisper's model is chosen when its local server starts. */
   transcription: { engine: TranscriptionEngine; model: string; whisperTiming: boolean };
   memory: { enabled: boolean; model: string };
   voice: VoiceSettings;
+  conversation: ConversationSettings;
   updatedAt: string;
 }
 
@@ -313,13 +355,14 @@ export const GEMINI_VOICES: { name: string; style: string }[] = [
 // Token usage
 // ---------------------------------------------------------------------------
 
-export const USAGE_FEATURES = ["tutor", "review", "quiz", "transcription", "voice", "memory"] as const;
+export const USAGE_FEATURES = ["tutor", "review", "quiz", "coach", "transcription", "voice", "memory"] as const;
 export type UsageFeature = (typeof USAGE_FEATURES)[number];
 
 export const FEATURE_LABELS: Record<UsageFeature, string> = {
   tutor: "Tutor conversation",
   review: "Session review",
   quiz: "Quiz writer",
+  coach: "Level coach",
   transcription: "Transcription",
   voice: "Voice",
   memory: "Mistake memory",
@@ -359,12 +402,24 @@ export interface UsageReport {
 }
 
 export const ROLEPLAY_SCENARIOS: RoleplayScenario[] = [
-  { id: "cafe", title: "Au café", level: "A2", brief: "Order drinks and a snack at a Paris café, ask about the menu, pay the bill, and chat with the waiter." },
-  { id: "directions", title: "Perdu en ville", level: "A2", brief: "Ask a passer-by for directions to the métro and a pharmacy, and check you've understood." },
-  { id: "weekend", title: "Le week-end dernier", level: "A2", brief: "A friend asks what you did last weekend; tell the story and ask about theirs." },
-  { id: "doctor", title: "Chez le médecin", level: "B1", brief: "Describe your symptoms to a doctor, explain since when and how it started, and understand the advice." },
-  { id: "apartment", title: "Louer un appartement", level: "B1", brief: "Phone an agency about a flat: ask about rent, charges, the neighbourhood, and arrange a viewing." },
-  { id: "complaint", title: "Réclamation au magasin", level: "B1", brief: "Return a faulty product and negotiate a refund or exchange with a reluctant shop assistant." },
-  { id: "interview", title: "Entretien d'embauche", level: "B2", brief: "A job interview: present your experience and strengths, and handle tricky questions." },
-  { id: "debate", title: "Débat : le télétravail", level: "B2", brief: "Argue for or against remote work with a colleague who disagrees; defend and nuance your opinion." },
+  { id: "cafe", title: "Au café", level: "A2", category: "everyday", brief: "Order drinks and a snack at a Paris café, ask about the menu, pay the bill, and chat with the waiter." },
+  { id: "directions", title: "Perdu en ville", level: "A2", category: "everyday", brief: "Ask a passer-by for directions to the métro and a pharmacy, and check you've understood." },
+  { id: "weekend", title: "Le week-end dernier", level: "A2", category: "everyday", brief: "A friend asks what you did last weekend; tell the story and ask about theirs." },
+  { id: "doctor", title: "Chez le médecin", level: "B1", category: "everyday", brief: "Describe your symptoms to a doctor, explain since when and how it started, and understand the advice." },
+  { id: "apartment", title: "Louer un appartement", level: "B1", category: "everyday", brief: "Phone an agency about a flat: ask about rent, charges, the neighbourhood, and arrange a viewing." },
+  { id: "complaint", title: "Réclamation au magasin", level: "B1", category: "everyday", brief: "Return a faulty product and negotiate a refund or exchange with a reluctant shop assistant." },
+
+  { id: "office-first-day", title: "Premier jour au bureau", level: "A2", category: "work", brief: "You are new. Introduce yourself to a colleague: your name, your job, where you worked before. Ask who does what in the team, where the kitchen and the meeting rooms are, and what time people arrive." },
+  { id: "office-coffee", title: "Pause café", level: "A2", category: "work", brief: "Small talk with a colleague at the coffee machine: the weekend, the weather, how busy you both are, the canteen, plans for the evening. Keep it light and friendly, and ask questions back." },
+  { id: "office-standup", title: "Réunion d'équipe", level: "B1", category: "work", brief: "A short stand-up meeting. You are the colleague running it: ask what the student did yesterday, what they will do today, and whether anything is blocking them. Ask for detail when an answer is vague, and check dates and numbers." },
+  { id: "office-one-to-one", title: "Point avec le manager", level: "B1", category: "work", brief: "You are the student's manager in a one-to-one. Ask how the work is going and how they feel about their workload, then let them ask for something: a training course, holiday, help on a task, or a change of priorities. Push back gently so they have to justify it." },
+  { id: "office-deadline", title: "Repousser une échéance", level: "B1", category: "work", brief: "You are a stakeholder waiting for something that is late. The student has to explain what went wrong, what has been done already, and propose a new date. Be disappointed but reasonable, and ask what will prevent it happening again." },
+  { id: "office-client-call", title: "Appel client", level: "B1", category: "work", brief: "A phone call with a client. You are the client: ask for a status update, question the cost, mention a problem you had, and ask what happens next. The student has to reassure you and agree the next steps." },
+  { id: "office-explain-process", title: "Expliquer un processus", level: "B1", category: "work", brief: "You are a new joiner and the student explains a process or tool to you step by step. Ask 'and then?', ask what happens if something fails, and ask them to repeat anything that wasn't clear. Make them use sequencing words and the imperative." },
+  { id: "office-presentation", title: "Présenter un projet", level: "B2", category: "work", brief: "The student presents a project to management. You are a sceptical director: ask about the budget, the risks, the timeline and the benefits, and interrupt with hard questions. Make them structure their answer and defend their figures." },
+  { id: "office-disagreement", title: "Désaccord avec un collègue", level: "B2", category: "work", brief: "You disagree with the student's approach and say so, politely but firmly. They have to disagree back diplomatically, concede what is fair, and find a compromise. Push them towards softened forms and the subjonctif after expressions of doubt or will." },
+  { id: "office-appraisal", title: "Entretien annuel", level: "B2", category: "work", brief: "You are the manager running an annual appraisal. Ask what went well, what went badly, and what they want next year. Give one piece of critical feedback and let them respond. If they ask for a raise or a promotion, ask them to make the case." },
+  { id: "office-negotiate", title: "Négocier avec un prestataire", level: "B2", category: "work", brief: "You are a supplier defending your quote. The student negotiates the price, the scope and the delivery date. Hold your ground, offer small concessions, and make them argue with conditionals and hypotheses." },
+  { id: "interview", title: "Entretien d'embauche", level: "B2", category: "work", brief: "A job interview: present your experience and strengths, and handle tricky questions." },
+  { id: "debate", title: "Débat : le télétravail", level: "B2", category: "work", brief: "Argue for or against remote work with a colleague who disagrees; defend and nuance your opinion." },
 ];
