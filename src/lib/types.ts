@@ -293,15 +293,48 @@ export interface ConversationSettings {
 
 export const END_SILENCE_RANGE = { min: 800, max: 4000, default: 2000 };
 
+export const AVATAR_MODES = ["photo", "3d", "portrait"] as const;
+export type AvatarMode = (typeof AVATAR_MODES)[number];
+
+export interface AvatarSettings {
+  mode: AvatarMode;
+  /** Optional .glb head (e.g. a Ready Player Me avatar). Empty means the built-in sculpted head. */
+  modelUrl: string;
+  /** Which photo in avatar_server/faces she wears in "photo" mode. */
+  photo: string;
+}
+
+export const AVATAR_MODE_LABELS: Record<AvatarMode, { title: string; description: string }> = {
+  photo: { title: "Photo", description: "A real photo of her, lip-synced to her voice on your GPU" },
+  "3d": { title: "3D head", description: "Sculpted in the browser: jaw, blinks and glances, no setup" },
+  portrait: { title: "Simple", description: "A quiet circle, for when you want no motion at all" },
+};
+
 export interface AppSettings {
   models: Record<BrainJob, ModelChoice>;
   /** `model` is the Gemini model; Whisper's model is chosen when its local server starts. */
   transcription: { engine: TranscriptionEngine; model: string; whisperTiming: boolean };
   memory: { enabled: boolean; model: string };
   voice: VoiceSettings;
+  avatar: AvatarSettings;
   conversation: ConversationSettings;
   updatedAt: string;
 }
+
+/** Where an API key is coming from, for the Settings page. Never carries the key itself. */
+export interface KeyStatus {
+  source: "app" | "environment" | "none";
+  /** Last four characters, so the student can tell which key is saved. */
+  hint: string;
+}
+
+export const KEY_PROVIDERS = ["claude", "gemini"] as const;
+export type KeyProvider = (typeof KEY_PROVIDERS)[number];
+
+export const KEY_LABELS: Record<KeyProvider, { title: string; where: string; url: string }> = {
+  claude: { title: "Claude (Anthropic)", where: "console.anthropic.com", url: "https://console.anthropic.com/settings/keys" },
+  gemini: { title: "Gemini (Google)", where: "Google AI Studio", url: "https://aistudio.google.com/apikey" },
+};
 
 export interface OllamaModelInfo {
   name: string;
@@ -317,38 +350,57 @@ export interface SettingsOptions {
   whisper: { online: boolean; model: string | null; device: string | null };
 }
 
-// Gemini's prebuilt TTS voices and their style descriptions.
-export const GEMINI_VOICES: { name: string; style: string }[] = [
-  { name: "Achernar", style: "Soft" },
-  { name: "Achird", style: "Friendly" },
-  { name: "Algenib", style: "Gravelly" },
-  { name: "Algieba", style: "Smooth" },
-  { name: "Alnilam", style: "Firm" },
-  { name: "Aoede", style: "Breezy" },
-  { name: "Autonoe", style: "Bright" },
-  { name: "Callirrhoe", style: "Easy-going" },
-  { name: "Charon", style: "Informative" },
-  { name: "Despina", style: "Smooth" },
-  { name: "Enceladus", style: "Breathy" },
-  { name: "Erinome", style: "Clear" },
-  { name: "Fenrir", style: "Excitable" },
-  { name: "Gacrux", style: "Mature" },
-  { name: "Iapetus", style: "Clear" },
-  { name: "Kore", style: "Firm" },
-  { name: "Laomedeia", style: "Upbeat" },
-  { name: "Leda", style: "Youthful" },
-  { name: "Orus", style: "Firm" },
-  { name: "Pulcherrima", style: "Forward" },
-  { name: "Puck", style: "Upbeat" },
-  { name: "Rasalgethi", style: "Informative" },
-  { name: "Sadachbia", style: "Lively" },
-  { name: "Sadaltager", style: "Knowledgeable" },
-  { name: "Schedar", style: "Even" },
-  { name: "Sulafat", style: "Warm" },
-  { name: "Umbriel", style: "Easy-going" },
-  { name: "Vindemiatrix", style: "Gentle" },
-  { name: "Zephyr", style: "Bright" },
-  { name: "Zubenelgenubi", style: "Casual" },
+/**
+ * Gemini's prebuilt voices. Google publishes the style word but not the pitch or the gender, so
+ * `hz` is the median pitch we measured from a sample of each voice (see voiceRegister below).
+ */
+export interface GeminiVoice {
+  name: string;
+  style: string;
+  /** Median pitch in hertz, measured from a spoken sample. */
+  hz: number;
+}
+
+/** Voices split cleanly into two groups around 180 Hz, which is where male and female speech parts. */
+export const VOICE_REGISTERS = {
+  higher: { label: "Higher pitched", hint: "usually reads as female" },
+  lower: { label: "Lower pitched", hint: "usually reads as male" },
+} as const;
+
+export type VoiceRegister = keyof typeof VOICE_REGISTERS;
+export const voiceRegister = (hz: number): VoiceRegister => (hz >= 180 ? "higher" : "lower");
+
+export const GEMINI_VOICES: GeminiVoice[] = [
+  { name: "Achernar", style: "Soft", hz: 214 },
+  { name: "Achird", style: "Friendly", hz: 148 },
+  { name: "Algenib", style: "Gravelly", hz: 141 },
+  { name: "Algieba", style: "Smooth", hz: 176 },
+  { name: "Alnilam", style: "Firm", hz: 169 },
+  { name: "Aoede", style: "Breezy", hz: 214 },
+  { name: "Autonoe", style: "Bright", hz: 192 },
+  { name: "Callirrhoe", style: "Easy-going", hz: 205 },
+  { name: "Charon", style: "Informative", hz: 155 },
+  { name: "Despina", style: "Smooth", hz: 205 },
+  { name: "Enceladus", style: "Breathy", hz: 156 },
+  { name: "Erinome", style: "Clear", hz: 224 },
+  { name: "Fenrir", style: "Excitable", hz: 226 },
+  { name: "Gacrux", style: "Mature", hz: 195 },
+  { name: "Iapetus", style: "Clear", hz: 152 },
+  { name: "Kore", style: "Firm", hz: 211 },
+  { name: "Laomedeia", style: "Upbeat", hz: 192 },
+  { name: "Leda", style: "Youthful", hz: 229 },
+  { name: "Orus", style: "Firm", hz: 157 },
+  { name: "Pulcherrima", style: "Forward", hz: 160 },
+  { name: "Puck", style: "Upbeat", hz: 147 },
+  { name: "Rasalgethi", style: "Informative", hz: 186 },
+  { name: "Sadachbia", style: "Lively", hz: 168 },
+  { name: "Sadaltager", style: "Knowledgeable", hz: 155 },
+  { name: "Schedar", style: "Even", hz: 157 },
+  { name: "Sulafat", style: "Warm", hz: 211 },
+  { name: "Umbriel", style: "Easy-going", hz: 162 },
+  { name: "Vindemiatrix", style: "Gentle", hz: 197 },
+  { name: "Zephyr", style: "Bright", hz: 203 },
+  { name: "Zubenelgenubi", style: "Casual", hz: 147 },
 ];
 
 // ---------------------------------------------------------------------------

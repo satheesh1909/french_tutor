@@ -11,3 +11,10 @@ __pycache__/
 
 # your personal learning data (transcripts, mistakes, progress)
 data/
+
+# the local lip-sync avatar: a cloned third-party repo, its environment and its model weights
+avatar_server/.venv/
+avatar_server/wav2lip/
+avatar_server/bin/
+avatar_server/out/
+.tutor.pids

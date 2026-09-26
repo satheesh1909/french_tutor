@@ -2,21 +2,30 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AVATAR_MODE_LABELS,
+  AVATAR_MODES,
   BRAIN_JOBS,
   EFFORTS,
   END_SILENCE_RANGE,
   FEATURE_LABELS,
   GEMINI_VOICES,
   JOB_LABELS,
+  KEY_LABELS,
+  KEY_PROVIDERS,
   MIC_SENSITIVITIES,
   nearestEffort,
   PROVIDERS,
   PROVIDER_LABELS,
   USAGE_PROVIDER_LABELS,
+  VOICE_REGISTERS,
+  voiceRegister,
   type AppSettings,
+  type AvatarSettings,
   type BrainJob,
   type ConversationSettings,
   type Effort,
+  type KeyProvider,
+  type KeyStatus,
   type MicSensitivity,
   type ModelChoice,
   type Provider,
@@ -26,6 +35,7 @@ import {
   type UsageReport,
   type UsageRow,
   type UsageTotals,
+  type VoiceRegister,
   type VoiceSettings,
 } from "@/lib/types";
 import { api, errorMessage } from "./api";
@@ -74,17 +84,19 @@ export function SettingsApp() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [savedJson, setSavedJson] = useState("");
   const [options, setOptions] = useState<SettingsOptions | null>(null);
+  const [keys, setKeys] = useState<Record<KeyProvider, KeyStatus> | null>(null);
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
-      .get<{ settings: AppSettings; options: SettingsOptions }>("/api/settings")
+      .get<Required<SettingsResponse>>("/api/settings")
       .then((r) => {
         setSettings(r.settings);
         setSavedJson(JSON.stringify(r.settings));
         setOptions(r.options);
+        setKeys(r.keys);
       })
       .catch((e) => setError(errorMessage(e)));
   }, []);
@@ -99,9 +111,10 @@ export function SettingsApp() {
     setSaving(true);
     setError(null);
     try {
-      const r = await api.put<{ settings: AppSettings }>("/api/settings", settings);
+      const r = await api.put<SettingsResponse>("/api/settings", settings);
       setSettings(r.settings);
       setSavedJson(JSON.stringify(r.settings));
+      setKeys(r.keys);
       setJustSaved(true);
     } catch (e) {
       setError(errorMessage(e));
@@ -110,7 +123,7 @@ export function SettingsApp() {
     }
   };
 
-  if (!settings || !options) {
+  if (!settings || !options || !keys) {
     return error ? <div className="alert">{error}</div> : <p className="muted">Loading settings and available models…</p>;
   }
 
@@ -124,7 +137,22 @@ export function SettingsApp() {
         <p className="muted">Choose which AI does each job and how your tutor sounds, and see how many tokens you&apos;ve used.</p>
       </header>
 
-      <Connections options={options} />
+      <Connections
+        options={options}
+        keys={keys}
+        onKeysSaved={(r) => {
+          setKeys(r.keys);
+          // A new key means new model lists. Don't discard edits that haven't been saved yet.
+          if (JSON.stringify(settings) === savedJson) {
+            setSettings(r.settings);
+            setSavedJson(JSON.stringify(r.settings));
+          }
+          api
+            .get<Required<SettingsResponse>>("/api/settings")
+            .then((fresh) => setOptions(fresh.options))
+            .catch(() => undefined);
+        }}
+      />
 
       <section className="panel">
         <h2 className="section-title">AI models</h2>
@@ -179,6 +207,8 @@ export function SettingsApp() {
 
       <VoicePanel voice={settings.voice} options={options} onChange={(voice) => update((s) => ({ ...s, voice }))} />
 
+      <AvatarPanel avatar={settings.avatar} onChange={(avatar) => update((s) => ({ ...s, avatar }))} />
+
       <UsagePanel />
 
       {error && <div className="alert">{error}</div>}
@@ -201,26 +231,41 @@ export function SettingsApp() {
   );
 }
 
-function Connections({ options }: { options: SettingsOptions }) {
+interface SettingsResponse {
+  settings: AppSettings;
+  keys: Record<KeyProvider, KeyStatus>;
+  keyTests?: Partial<Record<KeyProvider, string | null>>;
+  options?: SettingsOptions;
+}
+
+function Connections({
+  options,
+  keys,
+  onKeysSaved,
+}: {
+  options: SettingsOptions;
+  keys: Record<KeyProvider, KeyStatus>;
+  onKeysSaved: (r: SettingsResponse) => void;
+}) {
   const items = [
     {
       name: "Claude",
       ok: options.claude.connected,
-      detail: options.claude.connected ? `${options.claude.models.length} models available` : "Add ANTHROPIC_API_KEY to .env.local",
+      detail: options.claude.connected ? `${options.claude.models.length} models available` : "Add a key below to use Claude",
     },
     {
       name: "Gemini",
       ok: options.gemini.connected,
       detail: options.gemini.connected
         ? `${options.gemini.text.length} text, ${options.gemini.tts.length} voice and ${options.gemini.transcribe.length} transcription models`
-        : "Add GEMINI_API_KEY to .env.local",
+        : "Add a key below for her voice, her ears and quizzes",
     },
     {
       name: "Local (Ollama)",
       ok: options.ollama.online,
       detail: options.ollama.online
         ? `${options.ollama.chat.length} chat and ${options.ollama.embedding.length} embedding models installed`
-        : "Start Ollama to use local models",
+        : "Start Ollama to use local models (no key needed)",
     },
   ];
   return (
@@ -233,16 +278,116 @@ function Connections({ options }: { options: SettingsOptions }) {
             <div>
               <strong>{i.name}</strong>
               <span className="small muted">
-                {i.ok ? "Connected" : "Not connected"} · {i.detail}
+                {i.ok ? "Connected" : "Not connected"} &middot; {i.detail}
               </span>
             </div>
           </li>
         ))}
       </ul>
+
+      <h3 className="subhead">API keys</h3>
+      <div className="keys">
+        {KEY_PROVIDERS.map((provider) => (
+          <KeyRow key={provider} provider={provider} status={keys[provider]} onSaved={onKeysSaved} />
+        ))}
+      </div>
       <p className="small muted">
-        API keys live in <code>.env.local</code> and are never shown here. Restart the app after changing them.
+        A key saved here is kept in <code>data/secrets.json</code> on this computer, is never shown again, and goes nowhere except to Anthropic or
+        Google. It works immediately, with no restart. Keys in <code>.env.local</code> still work too, and a key saved here overrides them.
       </p>
     </section>
+  );
+}
+
+function KeyRow({ provider, status, onSaved }: { provider: KeyProvider; status: KeyStatus; onSaved: (r: SettingsResponse) => void }) {
+  const label = KEY_LABELS[provider];
+  const [value, setValue] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const send = async (key: string) => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.put<SettingsResponse>("/api/settings", { keys: { [provider]: key } });
+      setValue("");
+      setEditing(false);
+      const failure = r.keyTests?.[provider];
+      setResult(
+        key === "" ? { ok: true, message: "Key removed." } : failure ? { ok: false, message: failure } : { ok: true, message: "Saved, and it works." },
+      );
+      onSaved(r);
+    } catch (e) {
+      setResult({ ok: false, message: errorMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saved = status.source === "app";
+  const fromEnv = status.source === "environment";
+
+  return (
+    <div className="key">
+      <div className="key__top">
+        <strong>{label.title}</strong>
+        <span className="small muted">
+          {saved ? `Saved in the app, ending ${status.hint}` : fromEnv ? `From .env.local, ending ${status.hint}` : "No key yet"}
+        </span>
+      </div>
+      {editing || status.source === "none" ? (
+        <div className="row">
+          <input
+            className="input"
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && value.trim()) void send(value.trim());
+            }}
+            placeholder={provider === "claude" ? "sk-ant-..." : "Paste your Gemini key"}
+            aria-label={`${label.title} API key`}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button className="btn btn--primary" disabled={busy || !value.trim()} onClick={() => void send(value.trim())}>
+            {busy ? "Checking..." : "Save key"}
+          </button>
+          {editing && (
+            <button
+              className="btn btn--ghost"
+              disabled={busy}
+              onClick={() => {
+                setEditing(false);
+                setValue("");
+              }}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="row">
+          <button className="btn" disabled={busy} onClick={() => setEditing(true)}>
+            {saved ? "Replace key" : "Save a key here instead"}
+          </button>
+          {saved && (
+            <button className="btn btn--ghost" disabled={busy} onClick={() => void send("")}>
+              Remove
+            </button>
+          )}
+        </div>
+      )}
+      <p className="small muted">
+        Get one from{" "}
+        <a href={label.url} target="_blank" rel="noreferrer">
+          {label.where}
+        </a>
+        .
+      </p>
+      {result && <p className={`small ${result.ok ? "key__ok" : "key__bad"}`}>{result.message}</p>}
+    </div>
   );
 }
 
@@ -525,30 +670,43 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
         <>
           <div className="field">
             <span>Voice — press play to hear one before choosing it</span>
-            <div className="voice-grid" role="radiogroup" aria-label="Gemini voice">
-              {GEMINI_VOICES.map((v) => (
-                <div key={v.name} className={`voice-option${voice.geminiVoice === v.name ? " voice-option--active" : ""}`}>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={voice.geminiVoice === v.name}
-                    className="voice-option__pick"
-                    onClick={() => set({ geminiVoice: v.name })}
-                  >
-                    <strong>{v.name}</strong>
-                    <span>{v.style}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="voice-option__play"
-                    aria-label={playing === v.name ? `Stop ${v.name}` : `Hear ${v.name}`}
-                    onClick={() => void togglePreview(v.name)}
-                  >
-                    {playing === v.name ? "■" : "▶"}
-                  </button>
+            {(["higher", "lower"] as VoiceRegister[]).map((register) => (
+              <div key={register}>
+                <p className="voice-group">
+                  {VOICE_REGISTERS[register].label} <span className="muted">({VOICE_REGISTERS[register].hint})</span>
+                </p>
+                <div className="voice-grid" role="radiogroup" aria-label={`${VOICE_REGISTERS[register].label} Gemini voices`}>
+                  {GEMINI_VOICES.filter((v) => voiceRegister(v.hz) === register).map((v) => (
+                    <div key={v.name} className={`voice-option${voice.geminiVoice === v.name ? " voice-option--active" : ""}`}>
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={voice.geminiVoice === v.name}
+                        className="voice-option__pick"
+                        onClick={() => set({ geminiVoice: v.name })}
+                      >
+                        <strong>{v.name}</strong>
+                        <span>
+                          {v.style} · {v.hz} Hz
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="voice-option__play"
+                        aria-label={playing === v.name ? `Stop ${v.name}` : `Hear ${v.name}`}
+                        onClick={() => void togglePreview(v.name)}
+                      >
+                        {playing === v.name ? "■" : "▶"}
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
+            <span className="small muted">
+              Google doesn&apos;t publish a gender for these voices, so each one here is grouped by the pitch we measured from a sample of it. Whichever
+              you choose, she is asked to speak British English and native-sounding French.
+            </span>
           </div>
           <label className="field">
             <span>Voice model</span>
@@ -623,6 +781,122 @@ function totalFor(rows: UsageRow[], providers: UsageProvider[]): UsageTotals {
     t.calls += r.calls;
   }
   return t;
+}
+
+function AvatarPanel({ avatar, onChange }: { avatar: AvatarSettings; onChange: (a: AvatarSettings) => void }) {
+  const [url, setUrl] = useState(avatar.modelUrl);
+  const [server, setServer] = useState<{ online: boolean; starting: boolean; device: string | null; faces: string[] } | null>(null);
+  const set = (patch: Partial<AvatarSettings>) => onChange({ ...avatar, ...patch });
+
+  useEffect(() => {
+    if (avatar.mode !== "photo") return;
+    const check = () =>
+      api
+        .get<{ avatarServer: typeof server }>("/api/health")
+        .then((h) => setServer(h.avatarServer))
+        .catch(() => setServer(null));
+    void check();
+    const timer = setInterval(check, 5000);
+    return () => clearInterval(timer);
+  }, [avatar.mode]);
+
+  return (
+    <section className="panel">
+      <h2 className="section-title">Avatar</h2>
+      <div className="segmented" role="radiogroup" aria-label="Avatar">
+        {AVATAR_MODES.map((mode) => (
+          <button
+            key={mode}
+            role="radio"
+            aria-checked={avatar.mode === mode}
+            className={`seg-btn${avatar.mode === mode ? " seg-btn--on" : ""}`}
+            onClick={() => set({ mode })}
+          >
+            {AVATAR_MODE_LABELS[mode].title}
+          </button>
+        ))}
+      </div>
+      <p className="small muted">{AVATAR_MODE_LABELS[avatar.mode].description}.</p>
+
+      {avatar.mode === "photo" && (
+        <>
+          <div className="photo-row">
+            <img className="photo-row__face" src={`/api/avatar/face?name=${encodeURIComponent(avatar.photo || "charlotte")}`} alt="" />
+            <div>
+              <p className={`small ${server?.online ? "key__ok" : "key__bad"}`}>
+                {server?.online
+                  ? `Lip-sync server ready on the ${server.device?.toUpperCase() ?? "GPU"}.`
+                  : server?.starting
+                    ? "Lip-sync server is warming up, about a minute…"
+                    : "Lip-sync server isn't running."}
+              </p>
+              <p className="small muted">
+                {server?.online ? (
+                  <>She renders each reply on your own machine, so it costs nothing and nothing leaves this computer.</>
+                ) : (
+                  <>
+                    Start it with <code>npm run avatar</code> (or use <code>start-tutor.cmd</code>, which starts everything). Until then she still
+                    talks, but the photo stays still.
+                  </>
+                )}
+              </p>
+              {server && server.faces.length > 1 && (
+                <label className="field">
+                  <span>Photo</span>
+                  <select className="input" value={avatar.photo} onChange={(e) => set({ photo: e.target.value })}>
+                    {server.faces.map((face) => (
+                      <option key={face} value={face}>
+                        {face}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          </div>
+          <p className="small muted">
+            To use a different face, drop a front-facing portrait into <code>avatar_server/faces</code> and restart the avatar server. A photo picker
+            in the app is coming later.
+          </p>
+        </>
+      )}
+
+      {avatar.mode === "3d" && (
+        <label className="field">
+          <span>Your own 3D head (optional)</span>
+          <div className="row">
+            <input
+              className="input"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onBlur={() => set({ modelUrl: url.trim() })}
+              placeholder="https://models.readyplayer.me/xxxxxxxx.glb"
+              aria-label="Avatar model URL"
+              spellCheck={false}
+            />
+            {avatar.modelUrl && (
+              <button
+                className="btn btn--ghost"
+                onClick={() => {
+                  setUrl("");
+                  set({ modelUrl: "" });
+                }}
+              >
+                Use the built-in head
+              </button>
+            )}
+          </div>
+          <span className="small muted">
+            Paste a link to a <code>.glb</code> head and she wears it instead. Make a realistic one free at{" "}
+            <a href="https://readyplayer.me" target="_blank" rel="noreferrer">
+              readyplayer.me
+            </a>{" "}
+            and copy its .glb link: those carry the blend shapes her lip-sync needs. The model is downloaded by your browser each time.
+          </span>
+        </label>
+      )}
+    </section>
+  );
 }
 
 function UsagePanel() {

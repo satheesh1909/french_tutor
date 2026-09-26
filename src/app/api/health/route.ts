@@ -3,6 +3,7 @@ import { config } from "@/lib/config";
 import { hasClaudeCredentials } from "@/lib/providers/claude";
 import { hasGeminiKey } from "@/lib/providers/gemini";
 import { ollamaStatus } from "@/lib/providers/ollama";
+import { avatarStatus } from "@/lib/providers/avatar";
 import { whisperStatus } from "@/lib/providers/whisper";
 import { readSettings } from "@/lib/store";
 import { BRAIN_JOBS } from "@/lib/types";
@@ -11,11 +12,16 @@ import { BRAIN_JOBS } from "@/lib/types";
 export async function GET() {
   const settings = await readSettings();
   const brains = BRAIN_JOBS.map((job) => settings.models[job].provider);
-  const [ollama, whisper] = await Promise.all([ollamaStatus(), whisperStatus()]);
-  const gemini = hasGeminiKey();
+  const [ollama, whisper, avatarServer, claude, gemini] = await Promise.all([
+    ollamaStatus(),
+    whisperStatus(),
+    settings.avatar.mode === "photo" ? avatarStatus() : Promise.resolve(null),
+    hasClaudeCredentials(),
+    hasGeminiKey(),
+  ]);
   const engine = settings.transcription.engine;
   return NextResponse.json({
-    claude: hasClaudeCredentials(),
+    claude,
     gemini,
     ollama,
     whisper,
@@ -27,6 +33,8 @@ export async function GET() {
     },
     tutor: settings.models.tutor,
     voice: settings.voice,
+    avatar: settings.avatar,
+    avatarServer,
     conversation: settings.conversation,
     tutorName: config.tutorName,
   });

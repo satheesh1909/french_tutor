@@ -2,7 +2,7 @@
 
 A voice-first French tutor that talks with you in French and English. She corrects your mistakes and explains them, runs quizzes and role-plays, and tracks your progress from **A2 → B1 → B2**.
 
-This is **Phase 1**: the tutoring brain, voice, memory and progress tracking. The animated portrait is a placeholder for the photoreal avatar that comes in Phase 2.
+She has a face: a real photograph, lip-synced to her own voice on your GPU, free and entirely on this computer.
 
 ## Which AI does what
 
@@ -16,6 +16,7 @@ This is **Phase 1**: the tutoring brain, voice, memory and progress tracking. Th
 | Written quizzes | **Gemini** `gemini-3.8-flash` | Fast, cheap question writing |
 | Remembering and grouping your mistakes | **Ollama** `nomic-embed-text` (local) | Free, private, instant; spots repeat mistakes |
 | Speaking speed (word timings) | **Whisper** `medium` via faster-whisper (local, GPU) | Exact start and end time for every word; runs alongside Gemini with no extra wait |
+| Her face moving as she speaks | **Wav2Lip** via `avatar_server` (local, GPU) | Lip-syncs a photo to her voice: free, private, about half a second a reply |
 
 ## Speaking speed
 
@@ -36,30 +37,52 @@ These are the defaults. On the **Settings** page you can:
 
 - choose Claude, Gemini or a local Ollama model for the tutor, the session review, the quiz writer and the level coach, including the model and, for Claude, the effort level
 - pick the transcription model and the local embedding model, or turn mistake memory off
-- choose the voice: press play on any of Gemini's 30 voices to hear it before choosing, or use your computer's own voices (the Tutor page also has a quick voice picker with a **Hear** button)
+- choose the voice: Gemini's 30 voices are grouped by the pitch we measured from a sample of each one (higher ones usually read as female, lower as male) and every one has a play button, or use your computer's own voices. The Tutor page has the same picker with a **Hear** button. Whichever you choose, she is asked to speak British English and native-sounding French.
+- paste your Claude and Gemini API keys straight into **Connections**; each is tested as you save it and takes effect without a restart
+- choose her face: photo, 3D head or a plain circle
 - set how long a pause ends your turn, the microphone sensitivity, and whether talking over the tutor interrupts her
 - see token usage for today and this month, split into Local LLM, Gemini and Claude, with a breakdown by model and job
 
 Small local models are free and private but unreliable for grammar. In testing, `qwen2.5:7b` returned empty replies and `llama3:8b` gave wrong corrections. Use them for casual practice only.
 
+## Her face
+
+Three choices, on the **Settings** page:
+
+- **Photo** (the good one): a real photograph of her, with the mouth re-rendered from her own voice, on your GPU. Free, nothing leaves the machine, and it adds roughly half a second to a reply. Needs the one-off setup below.
+- **3D head**: a head sculpted in the browser, with a jaw that follows her voice, blinks and glances. No setup, works everywhere, but it looks like a cartoon.
+- **Simple**: the plain circle, if you'd rather have no motion.
+
+### Setting up the photo avatar
+
+About 6 GB of downloads and half an hour, most of it PyTorch. You need an NVIDIA GPU and Python 3.11 or 3.12.
+
+```bash
+powershell -ExecutionPolicy Bypass -File .\avatar_server\setup.ps1
+```
+
+That makes a private Python environment, fetches Wav2Lip and its weights, patches it for current libraries, and checks your GPU. Then `npm run avatar` starts the server (about a minute to warm up: the first frame batch on this GPU compiles kernels, and every batch after it takes a fifth of a second).
+
+To change her face, drop a front-facing portrait into `avatar_server/faces` and restart the server; pick it in Settings. Use a generated or licensed face, never a real person's photo without their permission. A picker in the app is coming later.
+
+**What it is and isn't.** The face is photoreal and the timing is right, but the mouth is softer than the rest of the picture, because Wav2Lip generates it small and scales it up. At the size she's drawn, it reads well. Her head doesn't move and she doesn't blink, so she is a photograph that talks, not a person on a video call.
+
 ## Setup
 
 1. Install [Node.js](https://nodejs.org) 22 or newer. You already have it.
-2. Copy `.env.example` to `.env.local` and fill in:
-   - `ANTHROPIC_API_KEY`: create one at [console.anthropic.com](https://console.anthropic.com). This is separate from a Claude.ai subscription.
-   - `GEMINI_API_KEY`: from [Google AI Studio](https://aistudio.google.com/apikey). If `GOOGLE_API_KEY` is already set in your system environment, it's used automatically.
+2. Get your API keys. Easiest: start the app and paste them into **Settings → Connections**, where each key is checked as you save it and kept in `data/secrets.json` on this computer.
+   - Claude, from [console.anthropic.com](https://console.anthropic.com). This is separate from a Claude.ai subscription.
+   - Gemini, from [Google AI Studio](https://aistudio.google.com/apikey).
+
+   If you prefer files, copy `.env.example` to `.env.local` and set `ANTHROPIC_API_KEY` and `GEMINI_API_KEY` there instead; a key saved in the app wins over the file.
 3. Optional: keep Ollama running with `ollama pull nomic-embed-text`.
 4. Optional, for precise speaking speed: Python with `pip install faster-whisper` (an NVIDIA GPU makes it fast).
-5. Install dependencies, then start everything:
+5. Optional, for her face to move: run `avatar_server/setup.ps1` (see **Her face** above).
+6. Install dependencies and start everything by double-clicking **`start-tutor.cmd`**.
 
-   ```bash
-   npm install
-   powershell -ExecutionPolicy Bypass -File .\start-tutor.ps1
-   ```
+   It installs what's missing, builds the app when the code has changed, starts Whisper and the avatar in the background, waits for the app to answer, and opens it in its own window. **`stop-tutor.cmd`** stops it all. Run **`Create desktop shortcut.cmd`** once and you get a "French Tutor" icon on the desktop and in the Start menu.
 
-   This starts Whisper in its own minimised window and the app in the current one. To start them separately instead, run `npm run whisper` in one terminal and `npm run dev` in another. The first Whisper start takes up to a minute.
-
-6. Open http://localhost:3000 in Chrome or Edge and allow microphone access.
+   To run the pieces by hand instead: `npm run dev`, `npm run whisper`, `npm run avatar`.
 
 ## Using it
 
@@ -92,4 +115,6 @@ src/
   lib/srs.ts      spaced-repetition scheduling
   lib/store.ts    JSON file storage
   components/     Tutor, Practice and Progress screens, mic recorder, voice playback, avatar stage
+whisper_server/   local speech-to-text with word timings
+avatar_server/    local lip-sync: server.py, setup.ps1, and the photos in faces/
 ```

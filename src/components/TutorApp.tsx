@@ -11,8 +11,11 @@ import {
   ROLEPLAY_SCENARIOS,
   SCENARIO_CATEGORY_LABELS,
   TUTOR_MODES,
+  VOICE_REGISTERS,
+  voiceRegister,
   type ScenarioCategory,
   type AppSettings,
+  type AvatarSettings,
   type ChatTurn,
   type ConversationSettings,
   type InputMethod,
@@ -24,12 +27,14 @@ import {
   type TutorMode,
   type VocabItem,
   type VoiceProvider,
+  type VoiceRegister,
   type VoiceSettings,
 } from "@/lib/types";
 import { averageFluency, PACE_GUIDE, type FluencyStats } from "@/lib/fluency";
 import { api, errorMessage } from "./api";
 import { clipFromSamples, concatAudio, type RecordedClip } from "./audioClip";
 import { AvatarStage, type StageState } from "./AvatarStage";
+import { speakWithPhoto } from "./photoAvatar";
 import { VoiceActivityListener, type MicMeter } from "./handsFree";
 import { useRecorder } from "./useRecorder";
 import { speak, type LevelRef } from "./voice";
@@ -43,6 +48,9 @@ interface Health {
   uses: Record<Provider, boolean>;
   tutor: ModelChoice;
   voice: VoiceSettings;
+  avatar: AvatarSettings;
+  /** Only present when the avatar is a photo: whether the local lip-sync server is up. */
+  avatarServer: { online: boolean; starting: boolean; device: string | null; faces: string[] } | null;
   conversation: ConversationSettings;
   tutorName: string;
 }
@@ -144,6 +152,7 @@ export function TutorApp() {
   const meter = useRef<MicMeter>({ level: 0, threshold: 0, speaking: false, silenceSec: 0 });
   const pending = useRef<PendingAnswer | null>(null);
   const listenerEvents = useRef({ speechStart: () => {}, utterance: (_s: Float32Array, _r: number) => {}, discard: () => {} });
+  const avatarVideo = useRef<HTMLVideoElement | null>(null);
 
   const tutorName = health?.tutorName ?? "Charlotte";
   const voice = voiceSettings ?? BROWSER_VOICE;
@@ -178,6 +187,29 @@ export function TutorApp() {
     logEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [session?.turns.length, status]);
 
+  /**
+   * Says a reply out loud in whichever way she is drawn: as a lip-synced video when she is a
+   * photo, otherwise as plain audio. If the lip-sync server is missing or refuses, she still
+   * speaks - the picture just doesn't move.
+   */
+  const speakAloud = useCallback(
+    async (segments: SpeechSegment[], signal: AbortSignal, geminiVoice?: string) => {
+      const chosen = geminiVoice ? { ...voice, provider: "gemini" as const, geminiVoice } : voice;
+      const asPhoto = health?.avatar.mode === "photo" && health.avatarServer?.online && avatarVideo.current;
+      if (asPhoto) {
+        try {
+          await speakWithPhoto(segments, chosen, level, signal, avatarVideo.current!);
+          return;
+        } catch (err) {
+          if (signal.aborted) return;
+          console.warn("The lip-sync server didn't answer; speaking without it.", err);
+        }
+      }
+      await speak(segments, chosen, level, signal);
+    },
+    [voice, level, health],
+  );
+
   const stopSpeaking = useCallback(() => {
     speaking.current?.abort();
     speaking.current = null;
@@ -193,7 +225,7 @@ export function TutorApp() {
       if (listener.current) listener.current.tutorSpeaking = true;
       setStatus("speaking");
       try {
-        await speak(turn.reply.speech, voice, level, controller.signal);
+        await speakAloud(turn.reply.speech, controller.signal);
       } finally {
         if (speaking.current === controller) {
           speaking.current = null;
@@ -202,7 +234,7 @@ export function TutorApp() {
         }
       }
     },
-    [voice, level, stopSpeaking, setStatus, settle],
+    [speakAloud, stopSpeaking, setStatus, settle],
   );
 
   const startSession = useCallback(
@@ -498,7 +530,7 @@ export function TutorApp() {
       if (listener.current) listener.current.tutorSpeaking = true;
       setStatus("speaking");
       try {
-        await speak(VOICE_SAMPLE, geminiVoice ? { ...voice, provider: "gemini", geminiVoice } : voice, level, controller.signal);
+        await speakAloud(VOICE_SAMPLE, controller.signal, geminiVoice);
       } catch (e) {
         setError(errorMessage(e));
       } finally {
@@ -509,7 +541,7 @@ export function TutorApp() {
         }
       }
     },
-    [voice, level, stopSpeaking, setStatus, settle],
+    [speakAloud, stopSpeaking, setStatus, settle],
   );
 
   const submitDraft = () => {
@@ -524,7 +556,7 @@ export function TutorApp() {
   return (
     <div className="tutor">
       <section className="panel tutor__stage">
-        <AvatarStage name={tutorName} state={status} level={level} />
+        <AvatarStage name={tutorName} state={status} level={level} avatar={health?.avatar} videoRef={avatarVideo} />
         {session ? (
           <div className="stage-controls">
             <p className="session-tag">
@@ -589,10 +621,14 @@ export function TutorApp() {
                   void previewVoice(geminiVoice);
                 }}
               >
-                {GEMINI_VOICES.map((v) => (
-                  <option key={v.name} value={v.name}>
-                    {v.name} · {v.style}
-                  </option>
+                {(["higher", "lower"] as VoiceRegister[]).map((register) => (
+                  <optgroup key={register} label={`${VOICE_REGISTERS[register].label} (${VOICE_REGISTERS[register].hint})`}>
+                    {GEMINI_VOICES.filter((v) => voiceRegister(v.hz) === register).map((v) => (
+                      <option key={v.name} value={v.name}>
+                        {v.name} · {v.style} · {v.hz} Hz
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
               <button className="btn btn--ghost" onClick={() => (status === "speaking" ? (stopSpeaking(), settle()) : void previewVoice())}>

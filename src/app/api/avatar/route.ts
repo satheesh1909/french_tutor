@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/http";
-import { speech } from "@/lib/ttsCache";
+import { animate } from "@/lib/providers/avatar";
+import { cacheVideo, cachedVideo, speech } from "@/lib/ttsCache";
 import { readSettings } from "@/lib/store";
 import { GEMINI_VOICES, type SpeechSegment } from "@/lib/types";
 
 const MAX_CHARS = 4_000;
 
 /**
- * Turns the tutor's language-tagged speech into one WAV clip. The page may pass a voice and model,
- * so the Settings page can preview a choice before saving it.
+ * Speaks the tutor's reply and animates her photo saying it, in one round trip: Gemini makes the
+ * audio, the local lip-sync server makes the picture, and the browser gets one mp4 with both.
  */
 export async function POST(req: Request) {
   try {
@@ -22,12 +23,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Reply too long to speak." }, { status: 413 });
     }
 
-    const { voice } = await readSettings();
+    const { voice, avatar } = await readSettings();
     const voiceName = GEMINI_VOICES.some((v) => v.name === body.voice) ? (body.voice as string) : voice.geminiVoice;
     const model = typeof body.model === "string" && /^gemini-[\w.-]+$/.test(body.model) ? body.model : voice.geminiModel;
 
+    const face = avatar.photo || "charlotte";
+    const reuse = await cachedVideo(segments, { model, voice: voiceName, face });
+    if (reuse) return new Response(new Uint8Array(reuse), { headers: { "content-type": "video/mp4", "cache-control": "no-store" } });
+
     const wav = await speech(segments, { model, voice: voiceName });
-    return new Response(new Uint8Array(wav), { headers: { "content-type": "audio/wav", "cache-control": "no-store" } });
+    const video = await animate(wav, face);
+    void cacheVideo(segments, { model, voice: voiceName, face }, video);
+    return new Response(new Uint8Array(video), { headers: { "content-type": "video/mp4", "cache-control": "no-store" } });
   } catch (err) {
     return errorResponse(err);
   }

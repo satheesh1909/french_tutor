@@ -36,7 +36,18 @@ export function errorResponse(err: unknown): NextResponse {
   // @google/genai errors carry the HTTP status of the failed call.
   const status = (err as { status?: unknown } | null)?.status;
   if (typeof status === "number") {
-    return json(502, `Gemini API error ${status}: ${(err as Error).message}`);
+    const message = (err as Error).message ?? "";
+    if (status === 429 && /per_?day|PerDay|requests_per_model_per_day/i.test(message)) {
+      const hours = /retry in (\d+)h/i.exec(message)?.[1];
+      const model = /model: ([\w.-]+)/i.exec(message)?.[1];
+      return json(
+        429,
+        `Gemini's free daily limit for ${model ?? "this model"} is used up${hours ? `; it resets in about ${hours} hours` : ""}. ` +
+          "The tutor carries on with what's still available, and her voice falls back to your computer's own.",
+      );
+    }
+    if (status === 429) return json(429, "Gemini is rate-limiting requests. Wait a few seconds and try again.");
+    return json(502, `Gemini API error ${status}: ${message}`);
   }
   return json(500, err instanceof Error ? err.message : "Something went wrong.");
 }

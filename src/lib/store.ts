@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
 import { averageFluency } from "./fluency";
-import { END_SILENCE_RANGE, type AppSettings, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
+import { END_SILENCE_RANGE, type AppSettings, type KeyProvider, type KeyStatus, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
 
 // Single-user app: plain JSON files in ./data are easy to inspect, back up, and edit by hand.
 
@@ -92,6 +92,7 @@ export function defaultSettings(): AppSettings {
     transcription: { engine: "gemini", model: config.gemini.transcribeModel, whisperTiming: true },
     memory: { enabled: true, model: config.ollama.embedModel },
     voice: { provider: "gemini", geminiModel: config.gemini.ttsModel, geminiVoice: config.gemini.ttsVoice, browserVoiceEn: "", browserVoiceFr: "" },
+    avatar: { mode: "3d", modelUrl: "", photo: "charlotte" },
     conversation: { handsFree: true, endSilenceMs: END_SILENCE_RANGE.default, sensitivity: "medium", bargeIn: true },
     updatedAt: "",
   };
@@ -112,11 +113,53 @@ export async function readSettings(): Promise<AppSettings> {
     transcription: { ...d.transcription, ...s.transcription },
     memory: { ...d.memory, ...s.memory },
     voice: { ...d.voice, ...s.voice },
+    avatar: { ...d.avatar, ...s.avatar },
     conversation: { ...d.conversation, ...s.conversation },
     updatedAt: s.updatedAt ?? d.updatedAt,
   };
 }
 export const writeSettings = (settings: AppSettings) => writeJson(file("settings.json"), settings);
+
+// ---------------------------------------------------------------------------
+// API keys saved from the Settings page
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys typed into the app, kept in data/secrets.json (git-ignored, this computer only). An
+ * environment variable is still honoured, so an existing .env.local keeps working; a key saved
+ * here wins, because that is the one the student just typed.
+ */
+export interface StoredSecrets {
+  anthropicApiKey?: string;
+  geminiApiKey?: string;
+}
+
+const secretsFile = () => file("secrets.json");
+export const readSecrets = () => readJson<StoredSecrets>(secretsFile(), {});
+export const writeSecrets = (secrets: StoredSecrets) => writeJson(secretsFile(), secrets);
+
+const status = (saved: string | undefined, env: string | undefined): KeyStatus => {
+  const key = saved?.trim() || env?.trim() || "";
+  return { source: saved?.trim() ? "app" : env?.trim() ? "environment" : "none", hint: key ? key.slice(-4) : "" };
+};
+
+export async function keyStatuses(): Promise<Record<KeyProvider, KeyStatus>> {
+  const saved = await readSecrets();
+  return {
+    claude: status(saved.anthropicApiKey, process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
+    gemini: status(saved.geminiApiKey, process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+  };
+}
+
+export async function claudeKey(): Promise<string | undefined> {
+  const saved = (await readSecrets()).anthropicApiKey?.trim();
+  return saved || process.env.ANTHROPIC_API_KEY?.trim() || undefined;
+}
+
+export async function geminiKey(): Promise<string | undefined> {
+  const saved = (await readSecrets()).geminiApiKey?.trim();
+  return saved || process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || undefined;
+}
 
 /** Token totals per local day, keyed by "provider|model|feature". */
 export type UsageLog = Record<string, Record<string, UsageTotals>>;

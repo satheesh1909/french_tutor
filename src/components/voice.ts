@@ -3,15 +3,26 @@
 import type { Lang, SpeechSegment, VoiceSettings } from "@/lib/types";
 
 /** Current loudness (0–1) of whoever is talking; the avatar reads it every frame. */
-export type LevelRef = { current: number };
+export type LevelRef = {
+  current: number;
+  /** How far the mouth should open (0-1). Set while the tutor speaks, for lip-sync. */
+  open?: number;
+  /** Mouth shape: 0 is round like "ooh", 1 is wide like "eee". */
+  wide?: number;
+};
 
+/** Loudness of a block of samples, 0-1, scaled so ordinary speech fills the meter. */
 export function rms(samples: Uint8Array): number {
+  return Math.min(1, rawRms(samples) * 4);
+}
+
+function rawRms(samples: Uint8Array): number {
   let sum = 0;
   for (const v of samples) {
     const x = (v - 128) / 128;
     sum += x * x;
   }
-  return Math.min(1, Math.sqrt(sum / samples.length) * 4);
+  return Math.sqrt(sum / samples.length);
 }
 
 /** Speaks the tutor's reply. Falls back to the browser's built-in voices if Gemini is unavailable. */
@@ -58,9 +69,25 @@ async function speakWithGemini(segments: SpeechSegment[], voice: VoiceSettings, 
     source.connect(analyser);
     analyser.connect(ctx.destination);
     const samples = new Uint8Array(analyser.fftSize);
+    const spectrum = new Uint8Array(analyser.frequencyBinCount);
+    // Which bins carry the vowel's body, and which carry the brightness that tells "eee" from "ooh".
+    const binHz = ctx.sampleRate / analyser.fftSize;
+    const band = (from: number, to: number) => {
+      let sum = 0;
+      for (let i = Math.max(1, Math.round(from / binHz)); i < Math.min(spectrum.length, Math.round(to / binHz)); i++) sum += spectrum[i];
+      return sum;
+    };
     const meter = () => {
       analyser.getByteTimeDomainData(samples);
-      level.current = rms(samples);
+      analyser.getByteFrequencyData(spectrum);
+      const raw = rawRms(samples);
+      const low = band(120, 900);
+      const high = band(1600, 4200);
+      const brightness = high / (low + high + 1);
+      level.current = Math.min(1, raw * 4);
+      // Lower gain than the meter: a mouth that is wide open on every syllable looks like a puppet.
+      level.open = Math.min(1, raw * 2.4);
+      level.wide = Math.min(1, Math.max(0, (brightness - 0.25) / 0.35));
       raf = requestAnimationFrame(meter);
     };
     await new Promise<void>((resolve) => {
@@ -83,6 +110,7 @@ async function speakWithGemini(segments: SpeechSegment[], voice: VoiceSettings, 
     clearTimeout(safety);
     cancelAnimationFrame(raf);
     level.current = 0;
+    level.open = 0;
     await ctx.close();
   }
 }
@@ -128,6 +156,8 @@ async function speakWithBrowser(segments: SpeechSegment[], settings: VoiceSettin
   // Browser speech exposes no audio stream, so animate the avatar with a gentle pulse instead.
   const pulse = setInterval(() => {
     level.current = 0.2 + Math.random() * 0.45;
+    level.open = level.current;
+    level.wide = 0.25 + Math.random() * 0.5;
   }, 120);
   try {
     for (const segment of segments) {
@@ -159,5 +189,6 @@ async function speakWithBrowser(segments: SpeechSegment[], settings: VoiceSettin
   } finally {
     clearInterval(pulse);
     level.current = 0;
+    level.open = 0;
   }
 }

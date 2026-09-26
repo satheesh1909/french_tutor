@@ -1,14 +1,27 @@
 import { GoogleGenAI, Modality, type GenerateContentResponseUsageMetadata } from "@google/genai";
 import type { z } from "zod";
+import { UserFacingError } from "../http";
 import { jsonSchemaFor, type StructuredRequest } from "../structured";
+import { geminiKey } from "../store";
 import type { Lang, SpeechSegment, UsageFeature } from "../types";
 import { recordUsage } from "../usage";
 import { pcm16Silence, pcm16ToWav } from "../wav";
 
+// Rebuilt when the key changes, so a key saved on the Settings page takes effect immediately.
 let client: GoogleGenAI | undefined;
-const gemini = () => (client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY }));
+let clientKey: string | undefined;
 
-export const hasGeminiKey = () => Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+async function gemini(): Promise<GoogleGenAI> {
+  const key = await geminiKey();
+  if (!key) throw new UserFacingError("No Gemini API key yet. Add one on the Settings page, under Connections.", 400);
+  if (!client || clientKey !== key) {
+    client = new GoogleGenAI({ apiKey: key });
+    clientKey = key;
+  }
+  return client;
+}
+
+export const hasGeminiKey = async () => Boolean(await geminiKey());
 
 function recordGeminiUsage(model: string, feature: UsageFeature, usage: GenerateContentResponseUsageMetadata | undefined) {
   recordUsage({
@@ -26,7 +39,7 @@ function recordGeminiUsage(model: string, feature: UsageFeature, usage: Generate
 // ---------------------------------------------------------------------------
 
 export async function geminiStructured<T extends z.ZodType>(req: StructuredRequest<T>): Promise<z.infer<T>> {
-  const response = await gemini().models.generateContent({
+  const response = await (await gemini()).models.generateContent({
     model: req.model,
     contents: req.messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.parts.join("\n\n") }] })),
     config: {
@@ -49,7 +62,7 @@ export async function geminiStructured<T extends z.ZodType>(req: StructuredReque
  * the mistakes the tutor needs to hear.
  */
 export async function transcribe(wav: Buffer, model: string): Promise<string> {
-  const interaction = await gemini().interactions.create({
+  const interaction = await (await gemini()).interactions.create({
     model,
     input: [{ type: "audio", data: wav.toString("base64"), mime_type: "audio/wav" }],
     generation_config: { transcription_config: { mode: "verbatim", language_codes: ["fr-FR", "en-GB"] } },
@@ -86,7 +99,7 @@ function mergeSameLanguage(segments: SpeechSegment[]): SpeechSegment[] {
 }
 
 async function speakSegment(segment: SpeechSegment, model: string, voice: string): Promise<{ pcm: Buffer; sampleRate: number }> {
-  const response = await gemini().models.generateContent({
+  const response = await (await gemini()).models.generateContent({
     model,
     contents: [{ parts: [{ text: `${DIRECTION[segment.lang]}\n${segment.text}` }] }],
     config: {
@@ -119,7 +132,7 @@ const NOT_FOR_TEXT = /image|live|embedding|robotics|computer-use|native-audio|cu
 export async function listGeminiModels(): Promise<{ text: string[]; tts: string[]; transcribe: string[] }> {
   if (!hasGeminiKey()) return { text: [], tts: [], transcribe: [] };
   const names: string[] = [];
-  const pager = await gemini().models.list({ config: { pageSize: 200 } });
+  const pager = await (await gemini()).models.list({ config: { pageSize: 200 } });
   for await (const m of pager) {
     if (m.name && (m.supportedActions ?? []).includes("generateContent")) names.push(m.name.replace(/^models\//, ""));
   }

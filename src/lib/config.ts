@@ -28,5 +28,9 @@ export const config = {
   whisper: {
     url: process.env.WHISPER_URL || "http://127.0.0.1:8765",
   },
+  avatar: {
+    url: process.env.AVATAR_URL || "http://127.0.0.1:8766",
+    facesDir: process.env.AVATAR_FACES_DIR || path.join(process.cwd(), "avatar_server", "faces"),
+  },
   dataDir: process.env.DATA_DIR || path.join(process.cwd(), "data"),
 };
