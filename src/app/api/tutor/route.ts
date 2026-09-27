@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 import { generateTutorReply } from "@/lib/brain";
 import { sanitizeFluency } from "@/lib/fluency";
 import { errorResponse } from "@/lib/http";
-import { recallMistakes, recordCorrections, recordVocabulary } from "@/lib/learner";
+import { recallMistakes, recordVocabulary } from "@/lib/learner";
 import { turnContext } from "@/lib/prompts";
 import { readProfile, readSession, withLock, writeSession } from "@/lib/store";
-import { speechText, type ChatTurn, type InputMethod } from "@/lib/types";
+import { speechText, type ChatTurn, type HeardLanguage, type InputMethod } from "@/lib/types";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (v: unknown): v is string => typeof v === "string" && UUID.test(v);
@@ -22,6 +22,14 @@ function markSuperseded(ids: string[]) {
     if (superseded.size <= 500) break;
     superseded.delete(id);
   }
+}
+
+/** The browser's report of which language the recording was in, narrowed to what we'll store. */
+function heardLanguage(value: unknown): HeardLanguage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { language, certain } = value as { language?: unknown; certain?: unknown };
+  if (language !== "fr" && language !== "en") return undefined;
+  return { language, certain: certain === true };
 }
 
 /** Removes replaced student answers, and the tutor reply that followed each, from a transcript. */
@@ -53,6 +61,7 @@ export async function POST(req: Request) {
       fluency?: unknown;
       clientTurnId?: unknown;
       supersedes?: unknown;
+      heard?: unknown;
     };
     const text = typeof body.text === "string" ? body.text.trim().slice(0, 4000) : "";
     if (!text) return NextResponse.json({ error: "Say or type something first." }, { status: 400 });
@@ -84,6 +93,7 @@ export async function POST(req: Request) {
       inputMethod,
       clientTurnId,
       fluency: inputMethod === "voice" ? sanitizeFluency(body.fluency) : undefined,
+      heard: inputMethod === "voice" ? heardLanguage(body.heard) : undefined,
       context: turnContext(profile, session, recalled, inputMethod),
       at: new Date().toISOString(),
     };
@@ -103,10 +113,11 @@ export async function POST(req: Request) {
       await writeSession(latest);
     });
 
-    // Updating the mistake history (with Ollama embeddings) shouldn't delay the tutor's voice.
-    Promise.all([recordCorrections(session.id, reply.corrections), recordVocabulary(reply.vocabulary)]).catch((err) =>
-      console.error("Couldn't update learner history", err),
-    );
+    // Corrections are NOT recorded here. They are a draft: the end-of-session review rules on each
+    // one before any of it reaches the mistake history, because a wrong correction that gets in is
+    // then drilled for weeks. They still show on screen, from turn.reply.corrections in the session.
+    // Vocabulary is safe to keep straight away, and the embeddings shouldn't delay her voice.
+    recordVocabulary(reply.vocabulary).catch((err) => console.error("Couldn't update learner history", err));
 
     return NextResponse.json({ studentTurn, tutorTurn });
   } catch (err) {

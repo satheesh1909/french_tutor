@@ -18,6 +18,7 @@ import {
   type AvatarSettings,
   type ChatTurn,
   type ConversationSettings,
+  type HeardLanguage,
   type InputMethod,
   type ModelChoice,
   type Provider,
@@ -29,6 +30,7 @@ import {
   type VoiceProvider,
   type VoiceRegister,
   type VoiceSettings,
+  type LocalVoiceStatus,
 } from "@/lib/types";
 import { averageFluency, PACE_GUIDE, type FluencyStats } from "@/lib/fluency";
 import { api, errorMessage } from "./api";
@@ -48,6 +50,8 @@ interface Health {
   uses: Record<Provider, boolean>;
   tutor: ModelChoice;
   voice: VoiceSettings;
+  /** Only present when the chosen voice is a local one: whether its server is up. */
+  voiceServer: LocalVoiceStatus | null;
   avatar: AvatarSettings;
   /** Only present when the avatar is a photo: whether the local lip-sync server is up. */
   avatarServer: { online: boolean; starting: boolean; device: string | null; faces: string[] } | null;
@@ -55,10 +59,19 @@ interface Health {
   tutorName: string;
 }
 
-const BROWSER_VOICE: VoiceSettings = { provider: "browser", geminiModel: "", geminiVoice: "", browserVoiceEn: "", browserVoiceFr: "" };
+const VOICE_PICKS: { provider: VoiceProvider; label: string; hint: string }[] = [
+  { provider: "piper", label: "Local", hint: "Piper on this computer: instant, unlimited, a separate voice per language" },
+  { provider: "xtts", label: "One voice", hint: "XTTS on this computer: the same voice in both languages, but slow to prepare a reply" },
+  { provider: "gemini", label: "Gemini", hint: "Google's voices; the free tier runs out after about a hundred clips a day" },
+  { provider: "browser", label: "Browser", hint: "The voices installed in Windows" },
+];
+
+const BROWSER_VOICE: VoiceSettings = { provider: "browser", geminiModel: "", geminiVoice: "", xttsSpeaker: "", piperVoiceFr: "", piperVoiceEn: "", browserVoiceEn: "", browserVoiceFr: "" };
 
 interface SendOptions {
   fluency?: FluencyStats;
+  /** Which language the recording was taken to be in, so a doubtful one is visible in the transcript. */
+  heard?: HeardLanguage;
   /** Id for this answer; lets a later, combined answer replace it. */
   clientTurnId?: string;
   /** Earlier answers this one replaces (hands-free: the student kept talking). */
@@ -75,16 +88,21 @@ interface PendingAnswer {
   endedAt: number;
 }
 
-async function transcribeClip(clip: RecordedClip, signal?: AbortSignal): Promise<{ text: string; fluency?: FluencyStats }> {
+async function transcribeClip(clip: RecordedClip, signal?: AbortSignal): Promise<{ text: string; fluency?: FluencyStats; heard?: HeardLanguage }> {
   const res = await fetch("/api/transcribe", {
     method: "POST",
     headers: { "content-type": "audio/wav", "x-speech-timing": JSON.stringify(clip.timing) },
     body: clip.wav,
     signal,
   });
-  const data = (await res.json().catch(() => ({}))) as { text?: string; fluency?: FluencyStats | null; error?: string };
+  const data = (await res.json().catch(() => ({}))) as {
+    text?: string;
+    fluency?: FluencyStats | null;
+    heard?: HeardLanguage | null;
+    error?: string;
+  };
   if (!res.ok) throw new Error(data.error ?? "Transcription failed.");
-  return { text: data.text?.trim() ?? "", fluency: data.fluency ?? undefined };
+  return { text: data.text?.trim() ?? "", fluency: data.fluency ?? undefined, heard: data.heard ?? undefined };
 }
 
 const NOT_CAUGHT = "I didn't catch that. Try again, a little closer to the mic.";
@@ -269,14 +287,31 @@ export function TutorApp() {
       const isReplaced = (t: ChatTurn) => replaced.has(t.clientTurnId ?? t.id);
       setError(null);
       setStatus("thinking");
-      const shown: ChatTurn = { id, clientTurnId: id, role: "student", text: trimmed, inputMethod, fluency: options.fluency, at: new Date().toISOString() };
+      const shown: ChatTurn = {
+        id,
+        clientTurnId: id,
+        role: "student",
+        text: trimmed,
+        inputMethod,
+        fluency: options.fluency,
+        heard: options.heard,
+        at: new Date().toISOString(),
+      };
       setSession((s) => s && { ...s, turns: [...s.turns.filter((t) => !isReplaced(t)), shown] });
 
       let result: { studentTurn: ChatTurn; tutorTurn: ChatTurn };
       try {
         result = await api.post(
           "/api/tutor",
-          { sessionId: current.id, text: trimmed, inputMethod, fluency: options.fluency, clientTurnId: id, supersedes: options.supersedes },
+          {
+            sessionId: current.id,
+            text: trimmed,
+            inputMethod,
+            fluency: options.fluency,
+            heard: options.heard,
+            clientTurnId: id,
+            supersedes: options.supersedes,
+          },
           options.signal,
         );
       } catch (e) {
@@ -337,7 +372,7 @@ export function TutorApp() {
           setError(NOT_CAUGHT);
           return settle();
         }
-        await send(heard.text, "voice", { fluency: heard.fluency, clientTurnId: id, supersedes: replaces, signal: controller.signal });
+        await send(heard.text, "voice", { fluency: heard.fluency, heard: heard.heard, clientTurnId: id, supersedes: replaces, signal: controller.signal });
       } catch (e) {
         if (controller.signal.aborted) return;
         pending.current = null;
@@ -454,7 +489,7 @@ export function TutorApp() {
         setError(NOT_CAUGHT);
         return setStatus("idle");
       }
-      await send(heard.text, "voice", { fluency: heard.fluency });
+      await send(heard.text, "voice", { fluency: heard.fluency, heard: heard.heard });
     } catch (e) {
       setError(errorMessage(e));
       setStatus("idle");
@@ -513,6 +548,11 @@ export function TutorApp() {
     }
   }, [session, stopSpeaking, isRecording, stopRecording, setStatus]);
 
+  /**
+   * The quick switch beside the transcript. It lists every voice, because leaving one out here is
+   * worse than it sounds: the buttons write straight to the saved settings, so a picker that only
+   * knew two of them would quietly downgrade a voice chosen on the Settings page.
+   */
   const changeVoice = useCallback((patch: Partial<VoiceSettings>) => {
     setVoiceSettings((v) => v && { ...v, ...patch });
     api
@@ -596,18 +636,19 @@ export function TutorApp() {
         <div className="voice-picker">
           <div className="voice-toggle" role="radiogroup" aria-label="Tutor voice">
             <span className="voice-toggle__label">Voice</span>
-            <button
-              className="seg-btn"
-              role="radio"
-              aria-checked={voice.provider === "gemini"}
-              onClick={() => changeVoice({ provider: "gemini" })}
-              disabled={health?.gemini === false}
-            >
-              Gemini
-            </button>
-            <button className="seg-btn" role="radio" aria-checked={voice.provider === "browser"} onClick={() => changeVoice({ provider: "browser" })}>
-              Browser
-            </button>
+            {VOICE_PICKS.map((pick) => (
+              <button
+                key={pick.provider}
+                className="seg-btn"
+                role="radio"
+                aria-checked={voice.provider === pick.provider}
+                title={pick.hint}
+                onClick={() => changeVoice({ provider: pick.provider })}
+                disabled={pick.provider === "gemini" && health?.gemini === false}
+              >
+                {pick.label}
+              </button>
+            ))}
           </div>
           {voice.provider === "gemini" && (
             <div className="voice-picker__row">
@@ -844,6 +885,15 @@ function SetupNotice({ health }: { health: Health | null }) {
     );
   }
   if (health.voice.provider === "gemini" && !health.gemini) issues.push("The Gemini voice needs a Gemini key; the browser voice is used instead.");
+  if (health.voiceServer && !health.voiceServer.online) {
+    issues.push(
+      health.voiceServer?.starting
+        ? "Her voice is still loading, so the browser voice is used for the moment."
+        : health.voiceServer?.problem
+          ? `Her voice can't start: ${health.voiceServer.problem}`
+          : `The local voice server isn't running, so the browser voice is used instead. Run "npm run ${health.voice.provider === "piper" ? "piper" : "voice"}", or choose another voice in Settings.`,
+    );
+  }
   if (health.uses.ollama && !health.ollama.online) issues.push("A job is set to a local model, but Ollama isn't running. Start Ollama or pick another model in Settings.");
   if (issues.length === 0) return null;
   return (
@@ -853,6 +903,17 @@ function SetupNotice({ health }: { health: Health | null }) {
       ))}
     </div>
   );
+}
+
+/**
+ * What to say about the language of a recording, when there is anything to say. A confident French
+ * reading is the normal case and needs no remark; the other two explain a transcript that doesn't
+ * match what you said.
+ */
+function heardNote(heard: ChatTurn["heard"]): string | null {
+  if (!heard) return null;
+  if (!heard.certain) return "language unclear";
+  return heard.language === "en" ? "heard as English" : null;
 }
 
 function Transcript({ turns, onReplay }: { turns: ChatTurn[]; onReplay: (turn: ChatTurn) => void }) {
@@ -871,6 +932,7 @@ function Transcript({ turns, onReplay }: { turns: ChatTurn[]; onReplay: (turn: C
               <div className="turn__meta">
                 {turn.inputMethod === "voice" ? "Spoken" : "Typed"}
                 {turn.fluency?.reliable && ` · ${turn.fluency.wpm} wpm · ${turn.fluency.pauses} pause${turn.fluency.pauses === 1 ? "" : "s"}`}
+                {heardNote(turn.heard) && ` · ${heardNote(turn.heard)}`}
                 {fixes.length > 0 && ` · ${fixes.length} correction${fixes.length === 1 ? "" : "s"}`}
               </div>
               {fixes.length > 0 && (

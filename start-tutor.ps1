@@ -38,13 +38,13 @@ function Stop-Tutor {
     }
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
   }
-  if ($stopped -eq 0) {
-    # No usable pid file: fall back to the processes this launcher would have started.
-    $leftovers = Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='python.exe'" |
-      Where-Object { $_.CommandLine -and ($_.CommandLine -match 'next(\.js)?.{0,40}\bstart\b' -or $_.CommandLine -match 'whisper_server' -or $_.CommandLine -match 'avatar_server') }
-    foreach ($p in $leftovers) {
-      try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $stopped++ } catch {}
-    }
+  # Always sweep, even when the pid file worked. What we recorded are the cmd.exe wrappers that
+  # "npm run ..." was launched through, and killing a wrapper leaves the node or python process it
+  # started still holding the port - which then looks like the tutor is already running.
+  $leftovers = Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='python.exe'" |
+    Where-Object { $_.CommandLine -and ($_.CommandLine -match 'next(\.js)?.{0,40}\bstart\b' -or $_.CommandLine -match 'whisper_server' -or $_.CommandLine -match 'avatar_server' -or $_.CommandLine -match 'voice_server' -or $_.CommandLine -match 'piper_server') }
+  foreach ($p in $leftovers) {
+    try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $stopped++ } catch {}
   }
   Write-Host "Stopped $stopped process(es)."
 }
@@ -82,6 +82,43 @@ if (Test-Ready $whisperUrl 2) {
   $started += $w.Id
 } else {
   Write-Host "Python isn't installed, so speaking speed will be estimated instead of measured." -ForegroundColor DarkYellow
+}
+
+# --- Voice (optional): speaks her replies locally, with no daily limit ---
+# Piper is the quick one and is tried first; XTTS only starts if Piper isn't installed, because
+# there is no point holding 2.5 GB of VRAM for a voice she isn't using.
+$piperPython = Join-Path $PSScriptRoot "piper_server\.venv\Scripts\python.exe"
+# Tell the voice server which voices she is actually set to use, so it warms those. Without this it
+# warms the first of each language alphabetically, and the first reply of the session pays ten
+# seconds to load the real ones instead.
+$settingsFile = Join-Path $PSScriptRoot "data\settings.json"
+if (Test-Path $settingsFile) {
+  try {
+    $savedVoice = (Get-Content $settingsFile -Raw | ConvertFrom-Json).voice
+    if ($savedVoice.piperVoiceFr) { $env:PIPER_VOICE_FR = $savedVoice.piperVoiceFr }
+    if ($savedVoice.piperVoiceEn) { $env:PIPER_VOICE_EN = $savedVoice.piperVoiceEn }
+  } catch {
+    # A settings file we can't read is not a reason to refuse to start.
+  }
+}
+if (Test-Ready "http://127.0.0.1:8768/health" 2) {
+  Write-Host "The Piper voice server is already running."
+} elseif (Test-Path $piperPython) {
+  Write-Host "Starting her voice (a few seconds to load the voices)..."
+  $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm run piper" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
+  $started += $p.Id
+}
+
+# --- XTTS (optional): one voice across both languages, but slow ---
+$voicePython = Join-Path $PSScriptRoot "voice_server\.venv\Scripts\python.exe"
+if (Test-Ready "http://127.0.0.1:8767/health" 2) {
+  Write-Host "The XTTS voice server is already running."
+} elseif ((Test-Path $voicePython) -and -not (Test-Path $piperPython)) {
+  Write-Host "Starting her voice (about a minute to load the model and warm the GPU)..."
+  $v = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm run voice" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
+  $started += $v.Id
+} elseif (-not (Test-Path $piperPython)) {
+  Write-Host "No local voice installed; she will use Gemini or the browser voice. See README." -ForegroundColor DarkYellow
 }
 
 # --- Avatar (optional): lip-syncs her photo to her voice on the GPU ---

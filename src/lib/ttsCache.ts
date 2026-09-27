@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
-import { synthesize } from "./providers/gemini";
+import { synthesizeWith, type VoiceChoice } from "./providers/speech";
 import type { SpeechSegment } from "./types";
 
 /**
@@ -16,9 +16,12 @@ import type { SpeechSegment } from "./types";
 const DIR = path.join(config.dataDir, "speech-cache");
 const MAX_FILES = 400;
 
-function key(segments: SpeechSegment[], options: { model: string; voice: string }): string {
+function key(segments: SpeechSegment[], choice: VoiceChoice): string {
   const text = segments.map((s) => `${s.lang}:${s.text.trim()}`).join("|");
-  return createHash("sha256").update(`${options.model}|${options.voice}|${text}`).digest("hex").slice(0, 32);
+  // Gemini clips keep the key they were saved under, so a cache filled before the local voice
+  // existed still counts - which matters, because a used-up daily quota can't refill it.
+  const who = choice.provider === "gemini" ? `${choice.model}|${choice.voice}` : `${choice.provider}|${choice.voice}`;
+  return createHash("sha256").update(`${who}|${text}`).digest("hex").slice(0, 32);
 }
 
 async function read(file: string): Promise<Buffer | null> {
@@ -57,24 +60,20 @@ async function prune(): Promise<void> {
 }
 
 /** Her voice for these words, from the cache when we've said them before. */
-export async function speech(segments: SpeechSegment[], options: { model: string; voice: string }): Promise<Buffer> {
-  const file = path.join(DIR, `${key(segments, options)}.wav`);
+export async function speech(segments: SpeechSegment[], choice: VoiceChoice): Promise<Buffer> {
+  const file = path.join(DIR, `${key(segments, choice)}.wav`);
   const cached = await read(file);
   if (cached) return cached;
-  const wav = await synthesize(segments, options);
+  const wav = await synthesizeWith(segments, choice);
   await write(file, wav);
   return wav;
 }
 
 /** The lip-synced video for these words, if it has been rendered before. */
-export async function cachedVideo(segments: SpeechSegment[], options: { model: string; voice: string; face: string }): Promise<Buffer | null> {
-  return read(path.join(DIR, `${key(segments, options)}-${options.face}.mp4`));
+export async function cachedVideo(segments: SpeechSegment[], choice: VoiceChoice & { face: string }): Promise<Buffer | null> {
+  return read(path.join(DIR, `${key(segments, choice)}-${choice.face}.mp4`));
 }
 
-export async function cacheVideo(
-  segments: SpeechSegment[],
-  options: { model: string; voice: string; face: string },
-  video: Buffer,
-): Promise<void> {
-  await write(path.join(DIR, `${key(segments, options)}-${options.face}.mp4`), video);
+export async function cacheVideo(segments: SpeechSegment[], choice: VoiceChoice & { face: string }, video: Buffer): Promise<void> {
+  await write(path.join(DIR, `${key(segments, choice)}-${choice.face}.mp4`), video);
 }

@@ -4,7 +4,7 @@ import type { z } from "zod";
 import { UserFacingError } from "../http";
 import type { StructuredRequest } from "../structured";
 import { EFFORTS, nearestEffort, type Effort } from "../types";
-import { claudeKey } from "../store";
+import { claudeKey, claudeWorkspaceId } from "../store";
 import { recordUsage } from "../usage";
 
 // Created lazily so routes that don't need Claude still load when no key is configured, and
@@ -13,13 +13,19 @@ let client: Anthropic | undefined;
 let clientKey: string | undefined;
 
 async function claude(): Promise<Anthropic> {
-  const key = await claudeKey();
+  const [key, workspace] = await Promise.all([claudeKey(), claudeWorkspaceId()]);
   if (!key && !process.env.ANTHROPIC_AUTH_TOKEN) {
     throw new UserFacingError("No Claude API key yet. Add one on the Settings page, under Connections.", 400);
   }
-  if (!client || clientKey !== key) {
-    client = new Anthropic(key ? { apiKey: key } : {});
-    clientKey = key;
+  // The workspace is part of what identifies the caller, so a change to it rebuilds the client
+  // just as a change of key does.
+  const identity = `${key ?? ""}|${workspace ?? ""}`;
+  if (!client || clientKey !== identity) {
+    client = new Anthropic({
+      ...(key ? { apiKey: key } : {}),
+      ...(workspace ? { defaultHeaders: { "anthropic-workspace-id": workspace } } : {}),
+    });
+    clientKey = identity;
   }
   return client;
 }

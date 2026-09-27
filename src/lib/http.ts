@@ -27,6 +27,15 @@ export function errorResponse(err: unknown): NextResponse {
     return json(502, "Couldn't reach Claude. Check your internet connection.");
   }
   if (err instanceof Anthropic.APIError) {
+    // An organisation-wide key has to say which workspace it is spending from.
+    if (/not scoped to a workspace|anthropic-workspace-id/i.test(err.message)) {
+      return json(
+        400,
+        "That Claude key belongs to the whole organisation, so it has to name a workspace. Put the workspace ID into " +
+          "Settings \u2192 Connections (or ANTHROPIC_WORKSPACE_ID in .env.local) \u2014 you'll find it in the console URL when you " +
+          "open the workspace. A key created inside a workspace needs none of this.",
+      );
+    }
     return json(502, `Claude API error ${err.status}: ${err.message}`);
   }
   if (err instanceof Anthropic.AnthropicError) {

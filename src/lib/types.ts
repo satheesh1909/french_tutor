@@ -88,6 +88,16 @@ export interface TutorReply {
 
 export type InputMethod = "voice" | "text";
 
+/**
+ * Which language the recording turned out to be in. Worth keeping, because a wrong answer here is
+ * invisible downstream: it produces fluent nonsense rather than an error.
+ */
+export interface HeardLanguage {
+  language: Lang;
+  /** False when French and English scored too close to call, and French was assumed. */
+  certain: boolean;
+}
+
 export interface ChatTurn {
   id: string;
   /** "note" turns are stage directions sent to the tutor (e.g. "session started") and hidden in the UI. */
@@ -97,6 +107,8 @@ export interface ChatTurn {
   inputMethod?: InputMethod;
   /** Speaking speed for spoken turns. */
   fluency?: FluencyStats;
+  /** What language a spoken turn was taken to be in, when Whisper decided it. */
+  heard?: HeardLanguage;
   /** Id the browser gave this answer, so an interrupted answer can be replaced by the combined one. */
   clientTurnId?: string;
   /** Learner context sent alongside this turn. Stored so the replayed history stays byte-identical for prompt caching. */
@@ -123,6 +135,16 @@ export interface SessionReview {
   encouragement: string;
   /** Comment on speaking pace and pauses; absent in reviews made before speed was measured. */
   fluencyNote?: string;
+  /**
+   * The review's ruling on each correction the tutor drafted this session. Only "confirmed" and
+   * "amended" entries reach the mistake history. Absent in reviews made before verification existed.
+   */
+  verifiedCorrections?: VerifiedCorrection[];
+}
+
+/** One correction, after the review has decided whether it was real. */
+export interface VerifiedCorrection extends Correction {
+  verdict: "confirmed" | "amended" | "wrong";
 }
 
 export interface Session {
@@ -136,15 +158,26 @@ export interface Session {
   review: SessionReview | null;
 }
 
-export type SessionSummary = Omit<Session, "turns"> & { turnCount: number; correctionCount: number; fluency: FluencyAverage | null };
+export type SessionSummary = Omit<Session, "turns"> & {
+  turnCount: number;
+  correctionCount: number;
+  /** Words the student produced, which is what decides whether a session may move their level. */
+  studentWords: number;
+  fluency: FluencyAverage | null;
+};
 
-export type VoiceProvider = "gemini" | "browser";
+export const VOICE_PROVIDERS = ["gemini", "piper", "xtts", "browser"] as const;
+export type VoiceProvider = (typeof VOICE_PROVIDERS)[number];
 
 export interface LearnerProfile {
   name: string;
   currentLevel: CefrLevel;
   targetLevel: CefrLevel;
   goals: string;
+  /** Facts the review would otherwise invent. Optional: an empty one reads as "not stated". */
+  city?: string;
+  employer?: string;
+  role?: string;
   correctionStyle: "gentle" | "explicit";
   focusAreas: string[];
   levels: LevelEstimates | null;
@@ -271,6 +304,11 @@ export interface VoiceSettings {
   provider: VoiceProvider;
   geminiModel: string;
   geminiVoice: string;
+  /** XTTS voice: a built-in speaker, or a recording in voice_server/voices. Empty lets the server choose. */
+  xttsSpeaker: string;
+  /** Piper voices. Each knows one language, so she needs one of each; empty lets the server choose. */
+  piperVoiceFr: string;
+  piperVoiceEn: string;
   /** Browser voice names; empty means pick automatically. */
   browserVoiceEn: string;
   browserVoiceFr: string;
@@ -343,11 +381,48 @@ export interface OllamaModelInfo {
   capabilities: string[];
 }
 
+/** Just enough about a local voice server for the tutor page to explain itself. */
+export interface LocalVoiceStatus {
+  online: boolean;
+  /** Loading its model; try again in a moment. */
+  starting: boolean;
+  /** Running but unusable — an unaccepted licence or no voices installed, say. */
+  problem: string | null;
+}
+
+/** One Piper voice, as the server lists it. A multi-speaker file appears once per speaker. */
+export interface PiperVoiceInfo {
+  /** What the app stores and sends back, e.g. "fr_FR-upmc-medium#jessica". */
+  id: string;
+  language: string;
+  quality: string;
+  rate: number;
+}
+
+export interface PiperStatus extends LocalVoiceStatus {
+  voices: PiperVoiceInfo[];
+  /** What it would use if the app named nothing. */
+  defaults: { fr: string; en: string };
+}
+
+/** What the local XTTS voice server reports about itself. */
+export interface XttsStatus extends LocalVoiceStatus {
+  device: string | null;
+  /** Speakers that ship with the model. */
+  speakers: string[];
+  /** Recordings in voice_server/voices, which she imitates. */
+  voices: string[];
+  /** What it uses when the app doesn't name a voice. */
+  default: string | null;
+}
+
 export interface SettingsOptions {
   claude: { connected: boolean; models: { id: string; label: string; efforts: Effort[]; structuredOutputs: boolean }[] };
   gemini: { connected: boolean; text: string[]; tts: string[]; transcribe: string[] };
   ollama: { online: boolean; chat: OllamaModelInfo[]; embedding: OllamaModelInfo[] };
   whisper: { online: boolean; model: string | null; device: string | null };
+  xtts: XttsStatus;
+  piper: PiperStatus;
 }
 
 /**

@@ -31,7 +31,17 @@ interface ProgressData {
   topMistakes: MistakeRecord[];
   mistakeCount: number;
   cards: { total: number; due: number; mature: number };
+  levelThresholds: { words: number; turns: number };
   speaking: Record<"today" | "week" | "previousWeek" | "month" | "allTime", FluencyAverage | null>;
+}
+
+/**
+ * A session too small to be evidence. The same rule runs on the server when the profile is
+ * written (see src/app/api/session/end/route.ts); this is only so the null result is visible
+ * instead of looking like nothing happened.
+ */
+function isTooShort(s: SessionSummary, limits: { words: number; turns: number }): boolean {
+  return s.studentWords < limits.words || s.turnCount < limits.turns;
 }
 
 export function ProgressApp() {
@@ -151,6 +161,7 @@ export function ProgressApp() {
           <ul className="sessions">
             {data.sessions.map((s) => {
               const scenario = ROLEPLAY_SCENARIOS.find((x) => x.id === s.scenarioId);
+              const tooShort = (x: SessionSummary) => isTooShort(x, data.levelThresholds);
               return (
                 <li key={s.id}>
                   <details>
@@ -163,11 +174,18 @@ export function ProgressApp() {
                       <span className="muted small">
                         {s.turnCount} turns · {s.correctionCount} corrections
                         {s.fluency ? ` · ${s.fluency.wpm} wpm` : ""}
-                        {s.review ? ` · ${s.review.levels.overall}` : ""}
+                        {s.review && !tooShort(s) ? ` · ${s.review.levels.overall}` : ""}
                       </span>
                     </summary>
                     {s.review ? (
                       <div className="session-review">
+                        {tooShort(s) && (
+                          <p className="small muted">
+                            Too short to judge your level: {s.studentWords} word{s.studentWords === 1 ? "" : "s"} over {s.turnCount} turn
+                            {s.turnCount === 1 ? "" : "s"}, where {data.levelThresholds.words} words and {data.levelThresholds.turns} turns are
+                            needed. Your level was left as it was; the advice below still stands.
+                          </p>
+                        )}
                         <p>{s.review.summary}</p>
                         {s.review.fluencyNote && <p className="small">{s.review.fluencyNote}</p>}
                         <ul className="bullets">
@@ -509,6 +527,24 @@ function ProfileForm({ profile, onSaved }: { profile: LearnerProfile; onSaved: (
           </select>
         </label>
       </div>
+      <div className="field-row">
+        <label className="field">
+          <span>Where you live</span>
+          <input className="input" value={form.city ?? ""} onChange={(e) => set("city", e.target.value)} placeholder="e.g. Dunkerque" />
+        </label>
+        <label className="field">
+          <span>Where you work</span>
+          <input className="input" value={form.employer ?? ""} onChange={(e) => set("employer", e.target.value)} placeholder="Company or organisation" />
+        </label>
+        <label className="field">
+          <span>Your job</span>
+          <input className="input" value={form.role ?? ""} onChange={(e) => set("role", e.target.value)} placeholder="e.g. project manager" />
+        </label>
+      </div>
+      <p className="small muted">
+        These three are optional, and they exist to stop the end-of-session review inventing details about you: without them it has been known to
+        write a plan around a city you&apos;ve never lived in.
+      </p>
       <label className="field">
         <span>Why you&apos;re learning French</span>
         <textarea

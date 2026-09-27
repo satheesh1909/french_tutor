@@ -25,27 +25,37 @@ function rawRms(samples: Uint8Array): number {
   return Math.sqrt(sum / samples.length);
 }
 
-/** Speaks the tutor's reply. Falls back to the browser's built-in voices if Gemini is unavailable. */
+/** Speaks the tutor's reply, falling back to the browser's own voices if the chosen one fails. */
 export async function speak(segments: SpeechSegment[], voice: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
   const parts = segments.filter((s) => s.text.trim());
   if (parts.length === 0 || signal.aborted) return;
-  if (voice.provider === "gemini") {
+  if (voice.provider !== "browser") {
     try {
-      await speakWithGemini(parts, voice, level, signal);
+      await speakFromServer(parts, voice, level, signal);
       return;
     } catch (err) {
       if (signal.aborted) return;
-      console.warn("Gemini voice failed; using the browser voice instead.", err);
+      // Better a plainer voice than silence: a used-up quota or a stopped voice server
+      // shouldn't end the lesson.
+      console.warn(`The ${voice.provider} voice failed; using the browser voice instead.`, err);
     }
   }
   await speakWithBrowser(parts, voice, level, signal);
 }
 
-async function speakWithGemini(segments: SpeechSegment[], voice: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
+/** Her voice made on the server - Gemini, or the local XTTS server - and played here. */
+async function speakFromServer(segments: SpeechSegment[], voice: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
   const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ segments, voice: voice.geminiVoice, model: voice.geminiModel }),
+    body: JSON.stringify({
+      segments,
+      provider: voice.provider,
+      voice: voice.geminiVoice,
+      model: voice.geminiModel,
+      speaker: voice.xttsSpeaker,
+      voices: { fr: voice.piperVoiceFr, en: voice.piperVoiceEn },
+    }),
     signal,
   });
   if (!res.ok) throw new Error(`Voice request failed (${res.status})`);

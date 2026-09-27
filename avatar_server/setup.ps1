@@ -22,9 +22,18 @@ Set-Location $here
 
 function Find-Python {
   if ($Python) { return $Python }
-  foreach ($version in @("3.12", "3.11")) {
-    $found = & py "-$version" -c "import sys; print(sys.executable)" 2>$null
-    if ($LASTEXITCODE -eq 0 -and $found) { return $found.Trim() }
+  # "py -3.12" writes to stderr when that version isn't installed, and a stop-on-error script would
+  # treat that as fatal instead of trying the next one. So keep the probe quiet and judge it by the
+  # exit code alone.
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    foreach ($version in @("3.12", "3.11")) {
+      $found = & py "-$version" -c "import sys; print(sys.executable)" 2>$null
+      if ($LASTEXITCODE -eq 0 -and $found) { return ($found | Select-Object -Last 1).ToString().Trim() }
+    }
+  } finally {
+    $ErrorActionPreference = $previous
   }
   $fallback = (Get-Command python -ErrorAction SilentlyContinue).Source
   if (-not $fallback) { throw "No Python found. Install Python 3.12 from python.org and run this again." }

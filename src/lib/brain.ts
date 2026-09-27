@@ -37,6 +37,19 @@ const TutorReplySchema = z.object({
 });
 
 const Level = z.enum(CEFR_LEVELS);
+/**
+ * The review's ruling on each correction the tutor drafted during the session. Nothing reaches
+ * the mistake history until it has a verdict here: see src/app/api/session/end/route.ts.
+ */
+const VerifiedCorrectionSchema = z.object({
+  original: z.string(),
+  corrected: z.string(),
+  category: z.enum(ERROR_CATEGORIES),
+  severity: z.enum(["major", "minor"]),
+  explanation: z.string(),
+  verdict: z.enum(["confirmed", "amended", "wrong"]),
+});
+
 const ReviewSchema = z.object({
   summary: z.string(),
   strengths: z.array(z.string()),
@@ -46,6 +59,7 @@ const ReviewSchema = z.object({
   levels: z.object({ overall: Level, speaking: Level, grammar: Level, vocabulary: Level }),
   nextSessionPlan: z.string(),
   encouragement: z.string(),
+  verifiedCorrections: z.array(VerifiedCorrectionSchema).default([]),
 });
 
 const CoachSchema = z.object({

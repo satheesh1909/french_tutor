@@ -4,6 +4,8 @@ import { listClaudeModels } from "@/lib/providers/claude";
 import { listGeminiModels } from "@/lib/providers/gemini";
 import { listOllamaModels } from "@/lib/providers/ollama";
 import { whisperStatus } from "@/lib/providers/whisper";
+import { piperStatus } from "@/lib/providers/piper";
+import { xttsStatus } from "@/lib/providers/xtts";
 import { keyStatuses, readSecrets, readSettings, withLock, writeSecrets, writeSettings } from "@/lib/store";
 import {
   BRAIN_JOBS,
@@ -14,6 +16,7 @@ import {
   KEY_PROVIDERS,
   MIC_SENSITIVITIES,
   PROVIDERS,
+  VOICE_PROVIDERS,
   type AppSettings,
   type AvatarMode,
   type Effort,
@@ -22,17 +25,18 @@ import {
   type ModelChoice,
   type Provider,
   type SettingsOptions,
+  type VoiceProvider,
 } from "@/lib/types";
 
-type ModelLists = Omit<SettingsOptions, "whisper">;
+type ModelLists = Omit<SettingsOptions, "whisper" | "xtts" | "piper">;
 
 // Listing models means calling three services, so keep the answer for a few minutes.
 let cachedOptions: { at: number; options: ModelLists } | undefined;
 
 async function loadOptions(): Promise<SettingsOptions> {
-  // The Whisper server is started and stopped by hand, so always check it fresh.
-  const [lists, whisper] = await Promise.all([loadModelLists(), whisperStatus()]);
-  return { ...lists, whisper };
+  // The local servers are started and stopped by hand, so always check them fresh.
+  const [lists, whisper, xtts, piper] = await Promise.all([loadModelLists(), whisperStatus(), xttsStatus(), piperStatus()]);
+  return { ...lists, whisper, xtts, piper };
 }
 
 async function loadModelLists(): Promise<ModelLists> {
@@ -93,19 +97,22 @@ function choice(input: unknown, current: ModelChoice): ModelChoice {
  * environment variable if there is one. The keys are never sent back to the browser.
  */
 async function saveKeys(input: unknown): Promise<Partial<Record<KeyProvider, string>>> {
-  const given = (input ?? {}) as Partial<Record<KeyProvider, unknown>>;
+  const given = (input ?? {}) as Partial<Record<KeyProvider, unknown>> & { claudeWorkspace?: unknown };
   const changed: Partial<Record<KeyProvider, string>> = {};
   for (const provider of KEY_PROVIDERS) {
     const value = given[provider];
     if (typeof value === "string") changed[provider] = value.trim().slice(0, 300);
   }
-  if (Object.keys(changed).length === 0) return changed;
+  // Not a key, but it is saved beside one: an organisation key has to name its workspace.
+  const workspace = typeof given.claudeWorkspace === "string" ? given.claudeWorkspace.trim().slice(0, 120) : undefined;
+  if (Object.keys(changed).length === 0 && workspace === undefined) return changed;
   await withLock(async () => {
     const current = await readSecrets();
     await writeSecrets({
       ...current,
       ...(changed.claude === undefined ? {} : { anthropicApiKey: changed.claude }),
       ...(changed.gemini === undefined ? {} : { geminiApiKey: changed.gemini }),
+      ...(workspace === undefined ? {} : { anthropicWorkspaceId: workspace }),
     });
   });
   cachedOptions = undefined; // the model lists depend on the keys
@@ -164,9 +171,13 @@ export async function PUT(req: Request) {
           model: text(input.memory?.model, current.memory.model),
         },
         voice: {
-          provider: v.provider === "gemini" || v.provider === "browser" ? v.provider : current.voice.provider,
+          provider: VOICE_PROVIDERS.includes(v.provider as VoiceProvider) ? (v.provider as VoiceProvider) : current.voice.provider,
           geminiModel: text(v.geminiModel, current.voice.geminiModel),
           geminiVoice: GEMINI_VOICES.some((g) => g.name === v.geminiVoice) ? (v.geminiVoice as string) : current.voice.geminiVoice,
+          // Not checked against the server's list: it may be stopped while its voice stays chosen.
+          xttsSpeaker: typeof v.xttsSpeaker === "string" ? v.xttsSpeaker.trim().slice(0, 120) : current.voice.xttsSpeaker,
+          piperVoiceFr: typeof v.piperVoiceFr === "string" ? v.piperVoiceFr.trim().slice(0, 120) : current.voice.piperVoiceFr,
+          piperVoiceEn: typeof v.piperVoiceEn === "string" ? v.piperVoiceEn.trim().slice(0, 120) : current.voice.piperVoiceEn,
           // Empty string is meaningful here: "choose automatically".
           browserVoiceEn: typeof v.browserVoiceEn === "string" ? v.browserVoiceEn.slice(0, 200) : current.voice.browserVoiceEn,
           browserVoiceFr: typeof v.browserVoiceFr === "string" ? v.browserVoiceFr.slice(0, 200) : current.voice.browserVoiceFr,

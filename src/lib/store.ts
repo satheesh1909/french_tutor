@@ -91,7 +91,16 @@ export function defaultSettings(): AppSettings {
     },
     transcription: { engine: "gemini", model: config.gemini.transcribeModel, whisperTiming: true },
     memory: { enabled: true, model: config.ollama.embedModel },
-    voice: { provider: "gemini", geminiModel: config.gemini.ttsModel, geminiVoice: config.gemini.ttsVoice, browserVoiceEn: "", browserVoiceFr: "" },
+    voice: {
+      provider: "gemini",
+      geminiModel: config.gemini.ttsModel,
+      geminiVoice: config.gemini.ttsVoice,
+      xttsSpeaker: config.xtts.speaker,
+      piperVoiceFr: config.piper.voiceFr,
+      piperVoiceEn: config.piper.voiceEn,
+      browserVoiceEn: "",
+      browserVoiceFr: "",
+    },
     avatar: { mode: "3d", modelUrl: "", photo: "charlotte" },
     conversation: { handsFree: true, endSilenceMs: END_SILENCE_RANGE.default, sensitivity: "medium", bargeIn: true },
     updatedAt: "",
@@ -132,6 +141,8 @@ export const writeSettings = (settings: AppSettings) => writeJson(file("settings
 export interface StoredSecrets {
   anthropicApiKey?: string;
   geminiApiKey?: string;
+  /** Not a secret, but it belongs with the key it qualifies: see claudeWorkspaceId. */
+  anthropicWorkspaceId?: string;
 }
 
 const secretsFile = () => file("secrets.json");
@@ -154,6 +165,16 @@ export async function keyStatuses(): Promise<Record<KeyProvider, KeyStatus>> {
 export async function claudeKey(): Promise<string | undefined> {
   const saved = (await readSecrets()).anthropicApiKey?.trim();
   return saved || process.env.ANTHROPIC_API_KEY?.trim() || undefined;
+}
+
+/**
+ * An Anthropic key made for a whole organisation isn't tied to a workspace, and every request
+ * with one has to name the workspace itself. A key made inside a workspace carries it already,
+ * and then this stays empty.
+ */
+export async function claudeWorkspaceId(): Promise<string | undefined> {
+  const saved = (await readSecrets()).anthropicWorkspaceId?.trim();
+  return saved || config.claude.workspaceId.trim() || undefined;
 }
 
 export async function geminiKey(): Promise<string | undefined> {
@@ -202,6 +223,9 @@ export function summarizeSession({ turns, ...rest }: Session): SessionSummary {
   return {
     ...rest,
     turnCount: turns.filter((t) => t.role === "student").length,
+    studentWords: turns
+      .filter((t) => t.role === "student")
+      .reduce((n, t) => n + (t.text ?? "").trim().split(/\s+/).filter(Boolean).length, 0),
     correctionCount: turns.reduce((n, t) => n + (t.reply?.corrections.length ?? 0), 0),
     fluency: averageFluency(turns.flatMap((t) => (t.fluency ? [t.fluency] : []))),
   };
