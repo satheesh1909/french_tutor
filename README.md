@@ -1,4 +1,4 @@
-# Charlotte, a personal French tutor
+# Alice, a personal French tutor
 
 A voice-first French tutor that talks with you in French and English. She corrects your mistakes and explains them, runs quizzes and role-plays, and tracks your progress from **A2 → B1 → B2**.
 
