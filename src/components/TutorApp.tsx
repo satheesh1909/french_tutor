@@ -10,6 +10,7 @@ import {
   PROVIDER_LABELS,
   ROLEPLAY_SCENARIOS,
   SCENARIO_CATEGORY_LABELS,
+  SPEECH_SPEED_RANGE,
   TUTOR_MODES,
   VOICE_REGISTERS,
   voiceRegister,
@@ -36,10 +37,17 @@ import { averageFluency, PACE_GUIDE, type FluencyStats } from "@/lib/fluency";
 import { api, errorMessage } from "./api";
 import { clipFromSamples, concatAudio, type RecordedClip } from "./audioClip";
 import { AvatarStage, type StageState } from "./AvatarStage";
-import { speakWithPhoto } from "./photoAvatar";
+import { photoPlayer } from "./photoAvatar";
 import { VoiceActivityListener, type MicMeter } from "./handsFree";
 import { useRecorder } from "./useRecorder";
-import { speak, type LevelRef } from "./voice";
+import { voicePlayer, type LevelRef } from "./voice";
+import { speakInOrder, withFallback, type SpeechPlayer } from "./speechQueue";
+
+/** One line of the tutor's streamed answer. See src/app/api/tutor/route.ts. */
+type TutorLine =
+  | { type: "segment"; segment: SpeechSegment }
+  | { type: "turn"; studentTurn: ChatTurn; tutorTurn: ChatTurn }
+  | { type: "error"; error: string };
 
 interface Health {
   claude: boolean;
@@ -66,7 +74,19 @@ const VOICE_PICKS: { provider: VoiceProvider; label: string; hint: string }[] = 
   { provider: "browser", label: "Browser", hint: "The voices installed in Windows" },
 ];
 
-const BROWSER_VOICE: VoiceSettings = { provider: "browser", geminiModel: "", geminiVoice: "", xttsSpeaker: "", piperVoiceFr: "", piperVoiceEn: "", browserVoiceEn: "", browserVoiceFr: "" };
+// The browser speaks at its own rate, so the Piper paces here are placeholders it never reads.
+const BROWSER_VOICE: VoiceSettings = {
+  provider: "browser",
+  geminiModel: "",
+  geminiVoice: "",
+  xttsSpeaker: "",
+  piperVoiceFr: "",
+  piperVoiceEn: "",
+  piperSpeedFr: SPEECH_SPEED_RANGE.default,
+  piperSpeedEn: SPEECH_SPEED_RANGE.default,
+  browserVoiceEn: "",
+  browserVoiceFr: "",
+};
 
 interface SendOptions {
   fluency?: FluencyStats;
@@ -206,24 +226,16 @@ export function TutorApp() {
   }, [session?.turns.length, status]);
 
   /**
-   * Says a reply out loud in whichever way she is drawn: as a lip-synced video when she is a
-   * photo, otherwise as plain audio. If the lip-sync server is missing or refuses, she still
-   * speaks - the picture just doesn't move.
+   * However she is drawn: a lip-synced video when she is a photo, otherwise plain audio. If the
+   * lip-sync server is missing or refuses, she still speaks - the picture just doesn't move.
    */
-  const speakAloud = useCallback(
-    async (segments: SpeechSegment[], signal: AbortSignal, geminiVoice?: string) => {
+  const buildPlayer = useCallback(
+    (geminiVoice?: string): SpeechPlayer => {
       const chosen = geminiVoice ? { ...voice, provider: "gemini" as const, geminiVoice } : voice;
+      const plain = voicePlayer(chosen, level);
       const asPhoto = health?.avatar.mode === "photo" && health.avatarServer?.online && avatarVideo.current;
-      if (asPhoto) {
-        try {
-          await speakWithPhoto(segments, chosen, level, signal, avatarVideo.current!);
-          return;
-        } catch (err) {
-          if (signal.aborted) return;
-          console.warn("The lip-sync server didn't answer; speaking without it.", err);
-        }
-      }
-      await speak(segments, chosen, level, signal);
+      if (!asPhoto) return plain;
+      return withFallback(photoPlayer(chosen, level, avatarVideo.current!), plain, "The lip-sync server didn't answer; speaking without it.");
     },
     [voice, level, health],
   );
@@ -234,25 +246,48 @@ export function TutorApp() {
     if (listener.current) listener.current.tutorSpeaking = false;
   }, []);
 
-  const say = useCallback(
-    async (turn: ChatTurn) => {
-      if (!turn.reply) return;
+  /**
+   * Opens a queue she speaks from, and holds "speaking" until it drains. Sentences can be pushed as
+   * they arrive, which is the whole point: a reply that is still being written can already be heard.
+   * Status only becomes "speaking" once there is something to hear, so the caption stays honest.
+   */
+  const openVoice = useCallback(
+    (geminiVoice?: string) => {
       stopSpeaking();
       const controller = new AbortController();
       speaking.current = controller;
       if (listener.current) listener.current.tutorSpeaking = true;
-      setStatus("speaking");
-      try {
-        await speakAloud(turn.reply.speech, controller.signal);
-      } finally {
+      const queue = speakInOrder(buildPlayer(geminiVoice), controller.signal);
+      const done = queue.finished().finally(() => {
         if (speaking.current === controller) {
           speaking.current = null;
           if (listener.current) listener.current.tutorSpeaking = false;
           settle();
         }
-      }
+      });
+      return {
+        controller,
+        done,
+        say(segment: SpeechSegment) {
+          if (queue.pushed() === 0) setStatus("speaking");
+          queue.push(segment);
+        },
+        spoken: queue.pushed,
+        close: queue.close,
+      };
     },
-    [speakAloud, stopSpeaking, setStatus, settle],
+    [buildPlayer, stopSpeaking, setStatus, settle],
+  );
+
+  const say = useCallback(
+    async (turn: ChatTurn) => {
+      if (!turn.reply) return;
+      const voice = openVoice();
+      for (const segment of turn.reply.speech) voice.say(segment);
+      voice.close();
+      await voice.done;
+    },
+    [openVoice],
   );
 
   const startSession = useCallback(
@@ -299,9 +334,14 @@ export function TutorApp() {
       };
       setSession((s) => s && { ...s, turns: [...s.turns.filter((t) => !isReplaced(t)), shown] });
 
-      let result: { studentTurn: ChatTurn; tutorTurn: ChatTurn };
+      // Opened before the request, so her sentences can be spoken as they arrive rather than after
+      // the last one is written. An answer that supersedes this one also stops this one's voice.
+      const voice = openVoice();
+      options.signal?.addEventListener("abort", () => voice.controller.abort(), { once: true });
+
+      let result: { studentTurn: ChatTurn; tutorTurn: ChatTurn } | null = null;
       try {
-        result = await api.post(
+        for await (const line of api.postLines<TutorLine>(
           "/api/tutor",
           {
             sessionId: current.id,
@@ -313,8 +353,14 @@ export function TutorApp() {
             supersedes: options.supersedes,
           },
           options.signal,
-        );
+        )) {
+          if (line.type === "segment") voice.say(line.segment);
+          else if (line.type === "turn") result = { studentTurn: line.studentTurn, tutorTurn: line.tutorTurn };
+          else if (line.type === "error") throw new Error(line.error);
+        }
       } catch (e) {
+        voice.controller.abort();
+        voice.close();
         if (options.signal?.aborted) return; // the combined answer takes over
         if (pending.current?.ids.includes(id)) pending.current = null;
         setSession((s) => s && { ...s, turns: s.turns.filter((t) => t.id !== id) });
@@ -323,12 +369,23 @@ export function TutorApp() {
         settle();
         return;
       }
-      if (options.signal?.aborted) return;
+      if (options.signal?.aborted) {
+        voice.controller.abort();
+        voice.close();
+        return;
+      }
+      // A provider that can't stream says nothing until it is finished; speak the reply as it stands.
+      if (result && voice.spoken() === 0) for (const segment of result.tutorTurn.reply?.speech ?? []) voice.say(segment);
+      voice.close();
+
       if (pending.current?.ids.includes(id)) pending.current = null; // answered: no longer mergeable
-      setSession((s) => s && { ...s, turns: [...s.turns.filter((t) => t.id !== id && !isReplaced(t)), result.studentTurn, result.tutorTurn] });
-      await say(result.tutorTurn).catch((e) => setError(errorMessage(e)));
+      if (result) {
+        const answered = result;
+        setSession((s) => s && { ...s, turns: [...s.turns.filter((t) => t.id !== id && !isReplaced(t)), answered.studentTurn, answered.tutorTurn] });
+      }
+      await voice.done;
     },
-    [say, setStatus, settle],
+    [openVoice, setStatus, settle],
   );
 
   // ---------------------------------------------------------------------------
@@ -564,24 +621,12 @@ export function TutorApp() {
   /** Plays a short sample so a voice can be tried before (and after) choosing it. */
   const previewVoice = useCallback(
     async (geminiVoice?: string) => {
-      stopSpeaking();
-      const controller = new AbortController();
-      speaking.current = controller;
-      if (listener.current) listener.current.tutorSpeaking = true;
-      setStatus("speaking");
-      try {
-        await speakAloud(VOICE_SAMPLE, controller.signal, geminiVoice);
-      } catch (e) {
-        setError(errorMessage(e));
-      } finally {
-        if (speaking.current === controller) {
-          speaking.current = null;
-          if (listener.current) listener.current.tutorSpeaking = false;
-          settle();
-        }
-      }
+      const voice = openVoice(geminiVoice);
+      for (const segment of VOICE_SAMPLE) voice.say(segment);
+      voice.close();
+      await voice.done;
     },
-    [speakAloud, stopSpeaking, setStatus, settle],
+    [openVoice],
   );
 
   const submitDraft = () => {

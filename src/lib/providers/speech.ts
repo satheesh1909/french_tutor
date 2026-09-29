@@ -1,4 +1,4 @@
-import { GEMINI_VOICES, type SpeechSegment, type VoiceProvider, type VoiceSettings } from "../types";
+import { GEMINI_VOICES, SPEECH_SPEED_RANGE, type SpeechSegment, type VoiceProvider, type VoiceSettings } from "../types";
 import { synthesize as geminiSynthesize } from "./gemini";
 import { piperSynthesize } from "./piper";
 import { xttsSynthesize } from "./xtts";
@@ -15,6 +15,8 @@ export interface VoiceChoice {
   voice: string;
   /** Piper only, which needs one voice per language. */
   voices?: { fr: string; en: string };
+  /** Piper only: how fast she speaks each language. Part of `voice` too, so the cache can tell paces apart. */
+  speeds?: { fr: number; en: number };
 }
 
 /**
@@ -38,7 +40,14 @@ export function resolveVoice(body: Record<string, unknown>, saved: VoiceSettings
     const one = (key: "fr" | "en", fallback: string) =>
       typeof named[key] === "string" && (named[key] as string).trim() ? (named[key] as string).trim().slice(0, 120) : fallback;
     const voices = { fr: one("fr", saved.piperVoiceFr), en: one("en", saved.piperVoiceEn) };
-    return { provider, model: "", voice: `${voices.fr}+${voices.en}`, voices };
+    const asked = (body.speeds ?? {}) as Record<string, unknown>;
+    const pace = (key: "fr" | "en", fallback: number) =>
+      typeof asked[key] === "number" && Number.isFinite(asked[key])
+        ? Math.min(SPEECH_SPEED_RANGE.max, Math.max(SPEECH_SPEED_RANGE.min, asked[key] as number))
+        : fallback;
+    const speeds = { fr: pace("fr", saved.piperSpeedFr), en: pace("en", saved.piperSpeedEn) };
+    // The pace belongs in the name, or a slower voice would replay the clips the quick one cached.
+    return { provider, model: "", voice: `${voices.fr}@${speeds.fr}+${voices.en}@${speeds.en}`, voices, speeds };
   }
   if (provider === "xtts") {
     const speaker = typeof body.speaker === "string" && body.speaker.trim() ? body.speaker.trim().slice(0, 120) : saved.xttsSpeaker;
@@ -53,7 +62,7 @@ export function resolveVoice(body: Record<string, unknown>, saved: VoiceSettings
 
 /** Her voice for these words, from whichever provider was chosen. */
 export function synthesizeWith(segments: SpeechSegment[], choice: VoiceChoice): Promise<Buffer> {
-  if (choice.provider === "piper") return piperSynthesize(segments, choice.voices ?? { fr: "", en: "" });
+  if (choice.provider === "piper") return piperSynthesize(segments, choice.voices ?? { fr: "", en: "" }, choice.speeds);
   if (choice.provider === "xtts") return xttsSynthesize(segments, choice.voice);
   return geminiSynthesize(segments, { model: choice.model, voice: choice.voice });
 }

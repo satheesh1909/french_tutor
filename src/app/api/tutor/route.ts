@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { generateTutorReply } from "@/lib/brain";
 import { sanitizeFluency } from "@/lib/fluency";
-import { errorResponse } from "@/lib/http";
+import { describeError, errorResponse } from "@/lib/http";
 import { recallMistakes, recordVocabulary } from "@/lib/learner";
 import { turnContext } from "@/lib/prompts";
 import { readProfile, readSession, withLock, writeSession } from "@/lib/store";
@@ -98,28 +98,61 @@ export async function POST(req: Request) {
       at: new Date().toISOString(),
     };
 
-    // The request's signal fires if the browser cancels, which also stops the model call.
-    const reply = await generateTutorReply({ ...session, turns: [...session.turns, studentTurn] }, req.signal);
-    const tutorTurn: ChatTurn = { id: crypto.randomUUID(), role: "tutor", text: speechText(reply), reply, at: new Date().toISOString() };
+    /**
+     * From here the answer is streamed as newline-delimited JSON, because the page can start
+     * speaking her first sentence while she is still writing the rest - which is most of the wait
+     * gone. Three kinds of line:
+     *
+     *   {"type":"segment","segment":{lang,text}}   one sentence, ready to speak
+     *   {"type":"turn","studentTurn":…,"tutorTurn":…}  the finished exchange, saved
+     *   {"type":"error","error":"…"}               it failed after the stream had opened
+     *
+     * Everything that can be checked up front already has been, so a request that gets this far
+     * answers 200 and reports any later failure in the stream.
+     */
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (line: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(line)}\n`));
+        try {
+          // The request's signal fires if the browser cancels, which also stops the model call.
+          const reply = await generateTutorReply({ ...session, turns: [...session.turns, studentTurn] }, req.signal, (segment) =>
+            send({ type: "segment", segment }),
+          );
+          const tutorTurn: ChatTurn = { id: crypto.randomUUID(), role: "tutor", text: speechText(reply), reply, at: new Date().toISOString() };
 
-    if (req.signal.aborted || (clientTurnId && superseded.has(clientTurnId))) {
-      return NextResponse.json({ error: "Replaced by a newer answer." }, { status: 409 });
-    }
+          if (req.signal.aborted || (clientTurnId && superseded.has(clientTurnId))) {
+            send({ type: "error", error: "Replaced by a newer answer." });
+            return;
+          }
 
-    // Both turns are saved only once the reply exists, so a failed call can simply be retried.
-    await withLock(async () => {
-      const latest = (await readSession(session.id)) ?? session;
-      latest.turns.push(studentTurn, tutorTurn);
-      await writeSession(latest);
+          // Both turns are saved only once the reply exists, so a failed call can simply be retried.
+          await withLock(async () => {
+            const latest = (await readSession(session.id)) ?? session;
+            latest.turns.push(studentTurn, tutorTurn);
+            await writeSession(latest);
+          });
+
+          send({ type: "turn", studentTurn, tutorTurn });
+
+          // Corrections are NOT recorded here. They are a draft: the end-of-session review rules on
+          // each one before any of it reaches the mistake history, because a wrong correction that
+          // gets in is then drilled for weeks. They still show on screen, from
+          // turn.reply.corrections in the session. Vocabulary is safe to keep straight away, and the
+          // embeddings shouldn't delay her voice.
+          recordVocabulary(reply.vocabulary).catch((err) => console.error("Couldn't update learner history", err));
+        } catch (err) {
+          if (req.signal.aborted) send({ type: "error", error: "Cancelled." });
+          else send({ type: "error", error: describeError(err).error });
+        } finally {
+          controller.close();
+        }
+      },
     });
 
-    // Corrections are NOT recorded here. They are a draft: the end-of-session review rules on each
-    // one before any of it reaches the mistake history, because a wrong correction that gets in is
-    // then drilled for weeks. They still show on screen, from turn.reply.corrections in the session.
-    // Vocabulary is safe to keep straight away, and the embeddings shouldn't delay her voice.
-    recordVocabulary(reply.vocabulary).catch((err) => console.error("Couldn't update learner history", err));
-
-    return NextResponse.json({ studentTurn, tutorTurn });
+    return new Response(stream, {
+      headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store", "x-accel-buffering": "no" },
+    });
   } catch (err) {
     if (req.signal.aborted) return NextResponse.json({ error: "Cancelled." }, { status: 499 });
     return errorResponse(err);

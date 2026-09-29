@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
 import { averageFluency } from "./fluency";
-import { END_SILENCE_RANGE, type AppSettings, type KeyProvider, type KeyStatus, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
+import { END_SILENCE_RANGE, SPEECH_SPEED_RANGE, type AppSettings, type KeyProvider, type KeyStatus, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
 
 // Single-user app: plain JSON files in ./data are easy to inspect, back up, and edit by hand.
 
@@ -98,6 +98,8 @@ export function defaultSettings(): AppSettings {
       xttsSpeaker: config.xtts.speaker,
       piperVoiceFr: config.piper.voiceFr,
       piperVoiceEn: config.piper.voiceEn,
+      piperSpeedFr: SPEECH_SPEED_RANGE.default,
+      piperSpeedEn: SPEECH_SPEED_RANGE.default,
       browserVoiceEn: "",
       browserVoiceFr: "",
     },

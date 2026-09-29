@@ -84,6 +84,13 @@ export interface TutorReply {
   speech: SpeechSegment[];
   corrections: Correction[];
   vocabulary: VocabItem[];
+  /**
+   * A few words she writes to herself before speaking, naming what she noticed in the student's
+   * French. It exists so that noticing comes before phrasing without the full corrections having to
+   * be written first, which is what used to delay her voice. Nothing displays it. Optional because
+   * replies recorded before it existed don't carry one.
+   */
+  focus?: string;
 }
 
 export type InputMethod = "voice" | "text";
@@ -309,10 +316,23 @@ export interface VoiceSettings {
   /** Piper voices. Each knows one language, so she needs one of each; empty lets the server choose. */
   piperVoiceFr: string;
   piperVoiceEn: string;
+  /** How fast she speaks each language. See SPEECH_SPEED_RANGE. */
+  piperSpeedFr: number;
+  piperSpeedEn: number;
   /** Browser voice names; empty means pick automatically. */
   browserVoiceEn: string;
   browserVoiceFr: string;
 }
+
+/**
+ * How fast she speaks, as a fraction of the voice's own pace. Piper measures length rather than
+ * speed, so the voice server sends this on as its reciprocal: 0.8 here is a length_scale of 1.25.
+ *
+ * She used to speak French at 0.92 and English at the voice's full pace, which is quick for someone
+ * learning - the English especially, because that is where the explanations are. Both now start a
+ * little under pace and are yours to set.
+ */
+export const SPEECH_SPEED_RANGE = { min: 0.6, max: 1.15, default: 0.85 };
 
 export type TranscriptionEngine = "gemini" | "whisper";
 
@@ -329,21 +349,28 @@ export interface ConversationSettings {
   bargeIn: boolean;
 }
 
-export const END_SILENCE_RANGE = { min: 800, max: 4000, default: 2000 };
+/**
+ * How long a silence ends your turn. Two seconds was the original default and it dominated the wait
+ * before she answered - a full quarter of it, before any work had started. Real conversation leaves
+ * gaps of a few hundred milliseconds, so this now starts under a second and can go lower; the floor
+ * is what stops an ordinary mid-sentence breath from sending half a thought.
+ */
+export const END_SILENCE_RANGE = { min: 500, max: 4000, default: 900 };
 
-export const AVATAR_MODES = ["photo", "3d", "portrait"] as const;
+export const AVATAR_MODES = ["photo", "still", "3d", "portrait"] as const;
 export type AvatarMode = (typeof AVATAR_MODES)[number];
 
 export interface AvatarSettings {
   mode: AvatarMode;
   /** Optional .glb head (e.g. a Ready Player Me avatar). Empty means the built-in sculpted head. */
   modelUrl: string;
-  /** Which photo in avatar_server/faces she wears in "photo" mode. */
+  /** Which photo in avatar_server/faces she wears in the "photo" and "still" modes. */
   photo: string;
 }
 
 export const AVATAR_MODE_LABELS: Record<AvatarMode, { title: string; description: string }> = {
-  photo: { title: "Photo", description: "A real photo of her, lip-synced to her voice on your GPU" },
+  photo: { title: "Photo, lip-synced", description: "A real photo of her, lip-synced to her voice on your GPU - about a second slower to start talking, because the video has to be made first" },
+  still: { title: "Photo, still", description: "The same photo, without the lip-sync: she answers about a second sooner and just doesn't move her mouth" },
   "3d": { title: "3D head", description: "Sculpted in the browser: jaw, blinks and glances, no setup" },
   portrait: { title: "Simple", description: "A quiet circle, for when you want no motion at all" },
 };
@@ -401,6 +428,8 @@ export interface PiperVoiceInfo {
 
 export interface PiperStatus extends LocalVoiceStatus {
   voices: PiperVoiceInfo[];
+  /** Voices already loaded into memory, so a reply in them starts immediately. */
+  loaded: string[];
   /** What it would use if the app named nothing. */
   defaults: { fr: string; en: string };
 }

@@ -16,6 +16,7 @@ import {
   nearestEffort,
   PROVIDERS,
   PROVIDER_LABELS,
+  SPEECH_SPEED_RANGE,
   USAGE_PROVIDER_LABELS,
   VOICE_REGISTERS,
   voiceRegister,
@@ -862,6 +863,8 @@ function PiperVoices({
     const available = options.piper.voices.filter((v) => v.language.startsWith(language));
     const missing = chosen && !available.some((v) => v.id === chosen) ? chosen : "";
     const previewKey = `piper-${language}`;
+    const pace = language === "fr" ? voice.piperSpeedFr : voice.piperSpeedEn;
+    const setPace = (value: number) => set(language === "fr" ? { piperSpeedFr: value } : { piperSpeedEn: value });
     return (
       <div className="field">
         <span>{label}</span>
@@ -884,6 +887,20 @@ function PiperVoices({
             {playing === previewKey ? "Stop" : "Hear"}
           </button>
         </div>
+        <label className="field">
+          <span className="small">
+            Speaking pace <strong>{pace.toFixed(2)}&times;</strong>
+            {pace === 1 ? " (the voice's own)" : pace < 1 ? " (slower)" : " (quicker)"}
+          </span>
+          <input
+            type="range"
+            min={SPEECH_SPEED_RANGE.min}
+            max={SPEECH_SPEED_RANGE.max}
+            step={0.05}
+            value={pace}
+            onChange={(e) => setPace(Number(e.target.value))}
+          />
+        </label>
       </div>
     );
   };
@@ -894,6 +911,10 @@ function PiperVoices({
         {row("fr", "French voice", voice.piperVoiceFr, (id) => ({ piperVoiceFr: id }))}
         {row("en", "English voice", voice.piperVoiceEn, (id) => ({ piperVoiceEn: id }))}
       </div>
+      <p className="small muted">
+        Press <strong>Hear</strong> after moving a pace slider to try it before saving. Slowing her down costs you almost nothing in waiting:
+        Piper speaks several times faster than real time, so a longer clip adds tens of milliseconds, not seconds.
+      </p>
       <p className="small muted">{status}</p>
       <p className="small muted">
         Each Piper voice is trained on one language, so these are two different speakers: she changes voice when she breaks off to explain
@@ -1082,7 +1103,7 @@ function AvatarPanel({ avatar, onChange }: { avatar: AvatarSettings; onChange: (
       </div>
       <p className="small muted">{AVATAR_MODE_LABELS[avatar.mode].description}.</p>
 
-      {avatar.mode === "photo" && (
+      {(avatar.mode === "photo" || avatar.mode === "still") && (
         <>
           <div className="photo-row">
             <img className="photo-row__face" src={`/api/avatar/face?name=${encodeURIComponent(avatar.photo || "charlotte")}&v=${version}`} alt="" />

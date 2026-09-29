@@ -39,7 +39,8 @@ function recordGeminiUsage(model: string, feature: UsageFeature, usage: Generate
 // ---------------------------------------------------------------------------
 
 export async function geminiStructured<T extends z.ZodType>(req: StructuredRequest<T>): Promise<z.infer<T>> {
-  const response = await (await gemini()).models.generateContent({
+  const client = await gemini();
+  const request = {
     model: req.model,
     contents: req.messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.parts.join("\n\n") }] })),
     config: {
@@ -48,9 +49,30 @@ export async function geminiStructured<T extends z.ZodType>(req: StructuredReque
       responseJsonSchema: jsonSchemaFor(req.schema),
       abortSignal: req.signal,
     },
-  });
-  recordGeminiUsage(req.model, req.feature, response.usageMetadata);
-  return req.schema.parse(JSON.parse(response.text ?? "")) as z.infer<T>;
+  };
+
+  if (!req.onDelta) {
+    const response = await client.models.generateContent(request);
+    recordGeminiUsage(req.model, req.feature, response.usageMetadata);
+    return req.schema.parse(JSON.parse(response.text ?? "")) as z.infer<T>;
+  }
+
+  // Handed over as it is written, so the tutor can speak her first sentence while the rest is still
+  // being composed. Only the caller that can use a half-written answer asks for this.
+  const stream = await client.models.generateContentStream(request);
+  let text = "";
+  let usage: Parameters<typeof recordGeminiUsage>[2];
+  for await (const chunk of stream) {
+    const piece = chunk.text ?? "";
+    if (piece) {
+      text += piece;
+      req.onDelta(piece);
+    }
+    // The totals arrive with the last chunk, and each one carries the running count.
+    if (chunk.usageMetadata) usage = chunk.usageMetadata;
+  }
+  recordGeminiUsage(req.model, req.feature, usage);
+  return req.schema.parse(JSON.parse(text)) as z.infer<T>;
 }
 
 // ---------------------------------------------------------------------------

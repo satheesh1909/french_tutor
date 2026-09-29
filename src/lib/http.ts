@@ -11,9 +11,14 @@ export class UserFacingError extends Error {
   }
 }
 
-const json = (status: number, error: string) => NextResponse.json({ error }, { status });
+const json = (status: number, error: string) => ({ status, error });
 
-export function errorResponse(err: unknown): NextResponse {
+/**
+ * A failure turned into a status and a sentence for the student. Kept apart from the response itself
+ * because a route that has already started streaming can't send a status any more, and still needs
+ * to say what went wrong in the same words.
+ */
+export function describeError(err: unknown): { status: number; error: string } {
   if (err instanceof UserFacingError) return json(err.status, err.message);
   console.error(err);
 
@@ -59,4 +64,9 @@ export function errorResponse(err: unknown): NextResponse {
     return json(502, `Gemini API error ${status}: ${message}`);
   }
   return json(500, err instanceof Error ? err.message : "Something went wrong.");
+}
+
+export function errorResponse(err: unknown): NextResponse {
+  const { status, error } = describeError(err);
+  return NextResponse.json({ error }, { status });
 }

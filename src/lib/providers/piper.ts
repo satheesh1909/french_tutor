@@ -6,7 +6,7 @@ import type { PiperStatus, SpeechSegment } from "../types";
 // several times faster than real time. Each Piper voice knows one language, so she uses two: the
 // French one for French, the English one for the explanations.
 
-const OFFLINE: PiperStatus = { online: false, starting: false, voices: [], defaults: { fr: "", en: "" }, problem: null };
+const OFFLINE: PiperStatus = { online: false, starting: false, voices: [], loaded: [], defaults: { fr: "", en: "" }, problem: null };
 
 export async function piperStatus(): Promise<PiperStatus> {
   try {
@@ -19,6 +19,7 @@ export async function piperStatus(): Promise<PiperStatus> {
       online: true,
       starting: false,
       voices: data.voices ?? [],
+      loaded: data.loaded ?? [],
       defaults: { fr: data.defaults?.fr ?? "", en: data.defaults?.en ?? "" },
       problem: null,
     };
@@ -27,14 +28,36 @@ export async function piperStatus(): Promise<PiperStatus> {
   }
 }
 
+/**
+ * Asks the voice server to load a pair of voices now. Loading one costs about four seconds, and it
+ * used to be paid inside the first reply of the session: the server warmed its own alphabetical
+ * defaults at start-up, which are not the voices the app asks for. Already-loaded voices cost
+ * nothing, so this is safe to call whenever the configuration might have changed.
+ */
+export async function piperWarm(voices: { fr: string; en: string }): Promise<string[]> {
+  const res = await fetch(`${config.piper.url}/warm`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ voices }),
+    signal: AbortSignal.timeout(180_000),
+  });
+  const data = (await res.json().catch(() => ({}))) as { loaded?: string[]; error?: string };
+  if (!res.ok) throw new Error(data.error ?? `The voice server wouldn't warm up (${res.status}).`);
+  return data.loaded ?? [];
+}
+
 /** Speaks one reply. Returns a mono 16-bit WAV, which the browser and the lip-sync server both take. */
-export async function piperSynthesize(segments: SpeechSegment[], voices: { fr: string; en: string }): Promise<Buffer> {
+export async function piperSynthesize(
+  segments: SpeechSegment[],
+  voices: { fr: string; en: string },
+  speeds?: { fr: number; en: number },
+): Promise<Buffer> {
   let res: Response;
   try {
     res = await fetch(`${config.piper.url}/speak`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ segments, voices }),
+      body: JSON.stringify({ segments, voices, speeds }),
       signal: AbortSignal.timeout(120_000),
     });
   } catch {

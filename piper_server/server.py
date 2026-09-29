@@ -18,7 +18,9 @@ Environment variables:
     PIPER_PORT      port to listen on (default 8768)
     PIPER_VOICE_FR  French voice to use when the app doesn't name one
     PIPER_VOICE_EN  English voice to use when the app doesn't name one
-    PIPER_FR_SPEED  how fast she speaks French, 1.0 being the voice's own pace (default 0.92)
+    PIPER_FR_SPEED  how fast she speaks French, 1.0 being the voice's own pace (default 0.85)
+    PIPER_EN_SPEED  the same for English (default 0.85). Both are only fallbacks: the app names a
+                    speed on every request, set on its Settings page.
 """
 
 import io
@@ -42,11 +44,27 @@ VOICES_DIR = HERE / "voices"
 PORT = int(os.environ.get("PIPER_PORT", "8768"))
 DEFAULT_FR = os.environ.get("PIPER_VOICE_FR", "")
 DEFAULT_EN = os.environ.get("PIPER_VOICE_EN", "")
-# She is a little easier to follow in French at just under full pace, which is what the browser
-# voice has always done here.
-FR_SPEED = float(os.environ.get("PIPER_FR_SPEED", "0.92"))
+# Fallbacks only: the app sends a speed with every request. Both languages start just under the
+# voice's own pace, because full pace is quick for someone learning - the English especially, since
+# that is where the explanations are.
+DEFAULT_SPEED = {
+    "fr": float(os.environ.get("PIPER_FR_SPEED", "0.85")),
+    "en": float(os.environ.get("PIPER_EN_SPEED", "0.85")),
+}
+SPEED_RANGE = (0.6, 1.15)
 MAX_CHARS = 4_000
 PAUSE_MS = 180  # a breath between segments, so French and English don't run together
+
+
+def speed_for(language: str, asked: dict[str, float] | None) -> float:
+    """The pace for one language: what the app asked for, clamped, else this server's own default."""
+    fallback = DEFAULT_SPEED.get(language, 1.0)
+    try:
+        wanted = float((asked or {}).get(language, fallback))
+    except (TypeError, ValueError):
+        return fallback
+    low, high = SPEED_RANGE
+    return min(high, max(low, wanted)) if wanted == wanted else fallback  # NaN keeps the default
 
 
 def pcm16_wav(audio: np.ndarray, rate: int) -> bytes:
@@ -155,14 +173,24 @@ class Speaker:
             print(f"  {key} ready in {time.time() - started:.1f}s", flush=True)
         return self.loaded[key]
 
-    def warm(self):
-        """The two voices she will actually use, so the first reply is as quick as the hundredth."""
+    def warm(self, voices: dict[str, str] | None = None):
+        """
+        Loads the voices she will actually use, so the first reply is as quick as the hundredth.
+
+        Which two those are is the app's business, not ours: it stores them in settings.json and
+        names them on every request. Warming our own defaults instead was worth nothing whenever the
+        app had chosen anything else - the English voice in particular, because "en_GB-alan-medium"
+        sorts first and the app asks for "en_GB-cori-high". The first reply of the session then paid
+        a four-second model load in the middle of it. So the app POSTs /warm with its pair at
+        start-up, and this falls back to the defaults only when nobody has said.
+        """
+        asked = voices or {}
         for language in ("fr", "en"):
-            key = self.catalogue.pick("", language)
+            key = self.catalogue.pick(asked.get(language, ""), language)
             if key:
                 self.voice(key)
 
-    def say(self, segments: list[dict], voices: dict[str, str]) -> tuple[bytes, dict]:
+    def say(self, segments: list[dict], voices: dict[str, str], speeds: dict[str, float] | None = None) -> tuple[bytes, dict]:
         pieces: list[tuple[np.ndarray, int]] = []
         used: list[str] = []
         for segment in segments:
@@ -173,7 +201,7 @@ class Speaker:
             config = SynthesisConfig(
                 speaker_id=entry["speaker_id"],
                 # Piper measures length, not speed: a bigger scale is a slower voice.
-                length_scale=(1.0 / FR_SPEED) if segment["lang"] == "fr" else None,
+                length_scale=1.0 / speed_for(segment["lang"], speeds),
             )
             chunks = list(self.voice(key).synthesize(segment["text"], syn_config=config))
             if not chunks:
@@ -223,23 +251,38 @@ class Worker(threading.Thread):
             return
         self.ready.set()
         while True:
-            segments, voices, result, done = self.jobs.get()
+            job, result, done = self.jobs.get()
             try:
-                result["wav"], result["timings"] = self.speaker.say(segments, voices)
+                job(self.speaker, result)
             except Exception as error:
                 result["error"] = error
             finally:
                 done.set()
 
-    def speak(self, segments: list[dict], voices: dict[str, str], timeout: float = 120.0) -> dict:
+    def _run(self, job, timeout: float) -> dict:
         result: dict = {}
         done = threading.Event()
-        self.jobs.put((segments, voices, result, done))
+        self.jobs.put((job, result, done))
         if not done.wait(timeout):
             raise TimeoutError("The voice took too long to answer.")
         if "error" in result:
             raise result["error"]
         return result
+
+    def speak(self, segments: list[dict], voices: dict[str, str], speeds: dict[str, float], timeout: float = 120.0) -> dict:
+        def job(speaker: Speaker, result: dict):
+            result["wav"], result["timings"] = speaker.say(segments, voices, speeds)
+
+        return self._run(job, timeout)
+
+    def warm(self, voices: dict[str, str], timeout: float = 180.0) -> dict:
+        """Loads a pair of voices now, so no reply has to wait for it. Already-loaded ones cost nothing."""
+
+        def job(speaker: Speaker, result: dict):
+            speaker.warm(voices)
+            result["loaded"] = sorted(speaker.loaded)
+
+        return self._run(job, timeout)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -270,7 +313,8 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self):
-        if urlparse(self.path).path != "/speak":
+        route = urlparse(self.path).path
+        if route not in ("/speak", "/warm"):
             return self._json(404, {"error": "Not found"})
         length = int(self.headers.get("content-length") or 0)
         if length <= 0:
@@ -279,6 +323,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length).decode("utf-8"))
         except Exception:
             return self._json(400, {"error": "That wasn't valid JSON."})
+
+        if route == "/warm":
+            return self._warm(body)
 
         segments = [
             {"lang": s["lang"], "text": s["text"].strip()}
@@ -291,6 +338,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(413, {"error": "That reply is too long to speak."})
         asked = body.get("voices") if isinstance(body.get("voices"), dict) else {}
         voices = {lang: asked.get(lang) if isinstance(asked.get(lang), str) else "" for lang in ("fr", "en")}
+        paces = body.get("speeds") if isinstance(body.get("speeds"), dict) else {}
+        speeds = {lang: speed_for(lang, paces) for lang in ("fr", "en")}
 
         if not worker.ready.is_set():
             return self._json(503, {"error": "The voice is still warming up."})
@@ -299,20 +348,40 @@ class Handler(BaseHTTPRequestHandler):
 
         started = time.time()
         try:
-            result = worker.speak(segments, voices)
+            result = worker.speak(segments, voices, speeds)
         except Exception as error:
             print(f"Speech failed: {error}", file=sys.stderr, flush=True)
             return self._json(500, {"error": f"Couldn't speak that reply: {error}"})
 
         wav, timings = result["wav"], result["timings"]
         took = round(time.time() - started, 2)
-        print(f"spoke {timings['seconds']}s in {took}s as {', '.join(timings['voices'])}", flush=True)
+        pace = "/".join(f"{lang} {speeds[lang]:.2f}" for lang in ("fr", "en"))
+        print(f"spoke {timings['seconds']}s in {took}s as {', '.join(timings['voices'])} at {pace}", flush=True)
         self.send_response(200)
         self.send_header("content-type", "audio/wav")
         self.send_header("content-length", str(len(wav)))
         self.send_header("x-speech", json.dumps({**timings, "took": took}))
         self.end_headers()
         self.wfile.write(wav)
+
+    def _warm(self, body: dict):
+        """
+        Loads the pair of voices the app is configured to use. Called once when the app starts and
+        again whenever the choice changes, so the cost never lands inside a reply.
+        """
+        asked = body.get("voices") if isinstance(body.get("voices"), dict) else {}
+        voices = {lang: asked.get(lang) if isinstance(asked.get(lang), str) else "" for lang in ("fr", "en")}
+        if not worker.ready.is_set():
+            return self._json(503, {"error": "The voice is still warming up."})
+        if worker.failure:
+            return self._json(500, {"error": str(worker.failure)})
+        started = time.time()
+        try:
+            result = worker.warm(voices)
+        except Exception as error:
+            print(f"Warm-up failed: {error}", file=sys.stderr, flush=True)
+            return self._json(500, {"error": f"Couldn't load those voices: {error}"})
+        self._json(200, {"ok": True, "loaded": result["loaded"], "took": round(time.time() - started, 2)})
 
     def log_message(self, format, *args):
         pass  # failures are printed above

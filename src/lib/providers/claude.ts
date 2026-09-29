@@ -104,6 +104,9 @@ export async function claudeStructured<T extends z.ZodType>(req: StructuredReque
     output_config: { ...(effort ? { effort } : {}), format: betaZodOutputFormat(req.schema) },
     ...fallbacks(req.model),
   }, { signal: req.signal });
+  // The answer was always streamed to avoid an HTTP timeout; this hands it on as it arrives, so the
+  // tutor can start speaking her first sentence while she is still writing the rest.
+  if (req.onDelta) stream.on("text", (delta) => req.onDelta!(delta));
   const response = await stream.finalMessage();
 
   const u = response.usage;

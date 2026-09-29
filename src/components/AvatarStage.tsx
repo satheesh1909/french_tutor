@@ -51,10 +51,10 @@ export function AvatarStage({
 
   return (
     <div ref={root} className={`stage stage--${state}`}>
-      <div className={`stage__portrait${avatar?.mode === "3d" || avatar?.mode === "photo" ? " stage__portrait--3d" : ""}`} aria-hidden="true">
+      <div className={`stage__portrait${avatar?.mode === "3d" || avatar?.mode === "photo" || avatar?.mode === "still" ? " stage__portrait--3d" : ""}`} aria-hidden="true">
         <span className="stage__ring stage__ring--outer" />
         <span className="stage__ring" />
-        {avatar?.mode === "photo" ? (
+        {avatar?.mode === "photo" || avatar?.mode === "still" ? (
           <div className="stage__photo">
             <img src={`/api/avatar/face?name=${encodeURIComponent(avatar.photo || "charlotte")}`} alt="" />
             <video ref={videoRef} playsInline preload="auto" />

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { UserFacingError } from "./http";
 import { generateStructured } from "./llm";
+import { speechSoFar } from "./partialSpeech";
 import { coachInput, COACH_SYSTEM_PROMPT, quizPrompt, REVIEW_SYSTEM_PROMPT, reviewInput, tutorSystemPrompt } from "./prompts";
 import { readSettings } from "./store";
 import type { ChatMessage } from "./structured";
@@ -16,13 +17,27 @@ import {
   type ReviewCard,
   type Session,
   type SessionReview,
+  type SpeechSegment,
   type TutorReply,
 } from "./types";
 
 // The tutor's three thinking jobs. Which model does each one is chosen on the Settings page.
 
-// Corrections come before speech so the model notices the mistakes before it phrases its reply.
+/**
+ * Field order here is the order the model writes them in, and the student hears nothing until
+ * "speech" arrives - so speech comes early and everything that isn't needed to speak comes after.
+ *
+ * "corrections" used to be first, so that she noticed the mistakes before phrasing her reply. She
+ * still does, but through "focus": a handful of words naming what went wrong. That keeps the
+ * benefit at a tenth of the cost, because the full corrections - five fields each, with an
+ * explanation - were being written out before the first French word existed. The worst turns in the
+ * history were exactly the ones with the most corrections: nine corrections meant sixteen seconds
+ * of silence. The corrections themselves are unchanged, and nothing acts on them until the
+ * end-of-session review rules on each one anyway.
+ */
 const TutorReplySchema = z.object({
+  focus: z.string(),
+  speech: z.array(z.object({ lang: z.enum(["fr", "en"]), text: z.string() })),
   corrections: z.array(
     z.object({
       original: z.string(),
@@ -32,7 +47,6 @@ const TutorReplySchema = z.object({
       severity: z.enum(["minor", "major"]),
     }),
   ),
-  speech: z.array(z.object({ lang: z.enum(["fr", "en"]), text: z.string() })),
   vocabulary: z.array(z.object({ french: z.string(), english: z.string(), example: z.string() })),
 });
 
@@ -92,7 +106,16 @@ function toMessages(session: Session): ChatMessage[] {
   });
 }
 
-export async function generateTutorReply(session: Session, signal?: AbortSignal): Promise<TutorReply> {
+/**
+ * One reply from the tutor. `onSegment` is called with each sentence as she writes it, so the page
+ * can start speaking before the rest of the answer exists; providers that can't stream never call it
+ * and the finished reply is returned just the same.
+ */
+export async function generateTutorReply(
+  session: Session,
+  signal?: AbortSignal,
+  onSegment?: (segment: SpeechSegment) => void,
+): Promise<TutorReply> {
   const { models } = await readSettings();
   const reply = await generateStructured(models.tutor, {
     feature: "tutor",
@@ -100,6 +123,7 @@ export async function generateTutorReply(session: Session, signal?: AbortSignal)
     messages: toMessages(session),
     schema: TutorReplySchema,
     signal,
+    onDelta: onSegment ? speechSoFar(onSegment) : undefined,
   });
   if (!reply.speech.some((s) => s.text.trim())) {
     throw new UserFacingError(

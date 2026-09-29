@@ -1,12 +1,17 @@
 "use client";
 
 import type { SpeechSegment, VoiceSettings } from "@/lib/types";
+import type { Playable, SpeechPlayer } from "./speechQueue";
 import { rms, type LevelRef } from "./voice";
 
 /**
- * Speaks a reply as video: the server makes her voice and lip-syncs her photo to it, and the
- * browser plays the one mp4 that comes back. The audio lives in that video, so nothing has to be
- * kept in sync here.
+ * Speaks a reply as video: the server makes her voice and lip-syncs her photo to it, and the browser
+ * plays the mp4 that comes back. The audio lives in that video, so nothing has to be kept in sync
+ * here.
+ *
+ * One clip per sentence rather than one per reply, so she starts talking as soon as the first sentence
+ * has been rendered instead of the last. Between clips the element holds its final frame, so the
+ * join reads as a small pause rather than a cut back to the still.
  */
 
 // A media element can only ever have one MediaElementAudioSourceNode, so keep it with the element.
@@ -26,34 +31,38 @@ function meterFor(video: HTMLVideoElement) {
   return meter;
 }
 
-export async function speakWithPhoto(
-  segments: SpeechSegment[],
-  voice: VoiceSettings,
-  level: LevelRef,
-  signal: AbortSignal,
-  video: HTMLVideoElement,
-): Promise<void> {
-  const parts = segments.filter((s) => s.text.trim());
-  if (parts.length === 0 || signal.aborted) return;
+export function photoPlayer(voice: VoiceSettings, level: LevelRef, video: HTMLVideoElement): SpeechPlayer {
+  return {
+    async render(segment: SpeechSegment, signal: AbortSignal): Promise<Playable> {
+      const res = await fetch("/api/avatar", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ segments: [segment], voice: voice.geminiVoice, model: voice.geminiModel }),
+        signal,
+      });
+      if (!res.ok) {
+        const problem = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(problem.error ?? `The avatar couldn't be rendered (${res.status}).`);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      return {
+        play: () => playClip(video, url, level, signal),
+        release: () => URL.revokeObjectURL(url),
+      };
+    },
+    release() {
+      video.classList.remove("is-speaking");
+      video.pause();
+    },
+  };
+}
 
-  const res = await fetch("/api/avatar", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ segments: parts, voice: voice.geminiVoice, model: voice.geminiModel }),
-    signal,
-  });
-  if (!res.ok) {
-    const problem = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(problem.error ?? `The avatar couldn't be rendered (${res.status}).`);
-  }
-  const url = URL.createObjectURL(await res.blob());
-  if (signal.aborted) {
-    URL.revokeObjectURL(url);
-    return;
-  }
-
+async function playClip(video: HTMLVideoElement, url: string, level: LevelRef, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
   const { ctx, analyser } = meterFor(video);
   if (ctx.state !== "running") await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 1200))]);
+  if (signal.aborted) return;
+
   const samples = new Uint8Array(analyser.fftSize);
   let raf = 0;
   let safety: ReturnType<typeof setTimeout> | undefined;
@@ -92,8 +101,5 @@ export async function speakWithPhoto(
     clearTimeout(safety);
     cancelAnimationFrame(raf);
     level.current = 0;
-    video.classList.remove("is-speaking");
-    video.pause();
-    URL.revokeObjectURL(url);
   }
 }

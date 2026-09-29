@@ -16,6 +16,7 @@ import {
   KEY_PROVIDERS,
   MIC_SENSITIVITIES,
   PROVIDERS,
+  SPEECH_SPEED_RANGE,
   VOICE_PROVIDERS,
   type AppSettings,
   type AvatarMode,
@@ -74,6 +75,12 @@ export async function GET(req: Request) {
 
 const text = (value: unknown, fallback: string, max = 120) =>
   typeof value === "string" && value.trim() && value.length <= max ? value.trim() : fallback;
+
+/** A speaking speed the voice server will accept, rounded to the step the slider moves in. */
+const speed = (value: unknown, fallback: number) =>
+  typeof value === "number" && Number.isFinite(value)
+    ? Math.round(Math.min(SPEECH_SPEED_RANGE.max, Math.max(SPEECH_SPEED_RANGE.min, value)) * 100) / 100
+    : fallback;
 
 /** A model has to be a plain https .glb/.gltf link; anything else keeps the current one. */
 function avatarUrl(value: string, current: string): string {
@@ -178,6 +185,8 @@ export async function PUT(req: Request) {
           xttsSpeaker: typeof v.xttsSpeaker === "string" ? v.xttsSpeaker.trim().slice(0, 120) : current.voice.xttsSpeaker,
           piperVoiceFr: typeof v.piperVoiceFr === "string" ? v.piperVoiceFr.trim().slice(0, 120) : current.voice.piperVoiceFr,
           piperVoiceEn: typeof v.piperVoiceEn === "string" ? v.piperVoiceEn.trim().slice(0, 120) : current.voice.piperVoiceEn,
+          piperSpeedFr: speed(v.piperSpeedFr, current.voice.piperSpeedFr),
+          piperSpeedEn: speed(v.piperSpeedEn, current.voice.piperSpeedEn),
           // Empty string is meaningful here: "choose automatically".
           browserVoiceEn: typeof v.browserVoiceEn === "string" ? v.browserVoiceEn.slice(0, 200) : current.voice.browserVoiceEn,
           browserVoiceFr: typeof v.browserVoiceFr === "string" ? v.browserVoiceFr.slice(0, 200) : current.voice.browserVoiceFr,
