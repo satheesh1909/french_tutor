@@ -891,6 +891,15 @@ kbd {
 .result__title {
   font-weight: 600;
 }
+/* What the student missed: the letters they didn't type, or the accent they left off. */
+.miss {
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  border-bottom: 2px solid currentColor;
+  border-radius: 0;
+  padding: 0 1px;
+}
 .result__answer {
   font-size: 18px;
   display: flex;
