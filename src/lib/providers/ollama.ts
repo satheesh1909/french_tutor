@@ -11,6 +11,13 @@ import { recordUsage } from "../usage";
 
 const url = (path: string) => `${config.ollama.url}${path}`;
 
+/**
+ * How long Ollama keeps the embedding model in memory after a request. Its own default is five
+ * minutes, which a thinking pause can outlast - and reloading costs about two seconds, paid inside
+ * the student's wait. The model is 274 MB, so keeping it resident through a session is cheap.
+ */
+const EMBED_KEEP_ALIVE = "30m";
+
 /** nomic-embed-text expects task prefixes: documents are stored mistakes, queries are what the student just said. */
 export async function embed(texts: string[], kind: "query" | "document"): Promise<number[][] | null> {
   if (texts.length === 0) return [];
@@ -20,7 +27,7 @@ export async function embed(texts: string[], kind: "query" | "document"): Promis
     const res = await fetch(url("/api/embed"), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: memory.model, input: texts.map((t) => `search_${kind}: ${t}`) }),
+      body: JSON.stringify({ model: memory.model, input: texts.map((t) => `search_${kind}: ${t}`), keep_alive: EMBED_KEEP_ALIVE }),
       // Storing mistakes happens in the background and may wait for Ollama to load the model;
       // recall happens while the student waits, so it gives up quickly.
       signal: AbortSignal.timeout(kind === "document" ? 60_000 : 5_000),
@@ -31,6 +38,31 @@ export async function embed(texts: string[], kind: "query" | "document"): Promis
     return data.embeddings?.length === texts.length ? data.embeddings : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Loads the embedding model before anyone needs it. Recall runs while the student waits for an
+ * answer, so a cold Ollama put its whole two-second load inside the first reply of every session.
+ * The page asks for health when it opens, which is the one moment nobody is waiting.
+ *
+ * Returns false when there is nothing to warm (memory off, Ollama closed) or the load failed; the
+ * caller only logs it, because a cold embedder costs a slow turn, not a broken one.
+ */
+export async function embedWarm(): Promise<boolean> {
+  const { memory } = await readSettings();
+  if (!memory.enabled) return false;
+  try {
+    const res = await fetch(url("/api/embed"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      // One short query, purely to make Ollama load the model and hold it.
+      body: JSON.stringify({ model: memory.model, input: "search_query: bonjour", keep_alive: EMBED_KEEP_ALIVE }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

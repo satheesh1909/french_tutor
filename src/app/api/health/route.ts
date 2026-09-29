@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { config } from "@/lib/config";
 import { hasClaudeCredentials } from "@/lib/providers/claude";
 import { hasGeminiKey } from "@/lib/providers/gemini";
-import { ollamaStatus } from "@/lib/providers/ollama";
+import { embedWarm, ollamaStatus } from "@/lib/providers/ollama";
 import { avatarStatus } from "@/lib/providers/avatar";
 import { whisperStatus } from "@/lib/providers/whisper";
 import { piperStatus, piperWarm } from "@/lib/providers/piper";
@@ -30,7 +30,22 @@ async function localVoiceStatus(provider: VoiceProvider, voice: VoiceSettings): 
  * is the right moment: it is the one time the student isn't waiting for an answer. Kept on
  * globalThis because Next.js may load this module more than once in dev.
  */
-const warming = globalThis as unknown as { __piperWarming?: Promise<unknown> };
+const warming = globalThis as unknown as { __piperWarming?: Promise<unknown>; __embedWarming?: Promise<unknown> };
+
+/**
+ * The same idea for the mistake memory: recalling past mistakes embeds what the student just said,
+ * and that runs before the tutor is even asked, so a cold model is two seconds of silence.
+ */
+function warmEmbedder(online: boolean, enabled: boolean): void {
+  if (!online || !enabled || warming.__embedWarming) return;
+  warming.__embedWarming = embedWarm()
+    .then((ok) => {
+      if (!ok) console.warn("Couldn't warm the embedding model; the first recall will be slow.");
+    })
+    .finally(() => {
+      warming.__embedWarming = undefined;
+    });
+}
 
 function warmPiper(loaded: string[], voice: VoiceSettings): void {
   const wanted = [voice.piperVoiceFr, voice.piperVoiceEn].filter(Boolean);
@@ -55,6 +70,7 @@ export async function GET() {
     hasClaudeCredentials(),
     hasGeminiKey(),
   ]);
+  warmEmbedder(ollama.online, settings.memory.enabled);
   const engine = settings.transcription.engine;
   return NextResponse.json({
     claude,
