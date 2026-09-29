@@ -90,7 +90,7 @@ function ReviewDeck({ listen }: { listen: (text: string) => void }) {
   const card = queue[0];
 
   const check = () => {
-    if (card && answer.trim()) setResult(checkAnswer(answer, [card.answer]));
+    if (card && answer.trim()) setResult(checkAnswer(answer, [card.answer, ...(card.accepts ?? [])]));
   };
 
   const grade = async (g: Grade) => {

@@ -214,6 +214,13 @@ export interface ReviewCard {
   prompt: string;
   /** correction: the corrected form. vocab: the French expression. */
   answer: string;
+  /**
+   * Other French that is just as right. English hides things French insists on: "you" is both tu
+   * and vous, and "pleased to meet you" is enchante or enchantee depending on who is speaking.
+   * Without these, a card asks a question it hasn't given the student enough to answer, and marks
+   * correct French wrong - which also feeds the scheduler a lapse that never happened.
+   */
+  accepts?: string[];
   note: string;
   category: ErrorCategory | null;
   ease: number;
