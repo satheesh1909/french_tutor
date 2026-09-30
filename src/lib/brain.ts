@@ -3,7 +3,7 @@ import { UserFacingError } from "./http";
 import { generateStructured } from "./llm";
 import { speechSoFar } from "./partialSpeech";
 import { coachInput, COACH_SYSTEM_PROMPT, quizPrompt, REVIEW_SYSTEM_PROMPT, reviewInput, tutorSystemPrompt } from "./prompts";
-import { readSettings } from "./store";
+import { readMaterials, readSettings } from "./store";
 import type { ChatMessage } from "./structured";
 import {
   CEFR_LEVELS,
@@ -117,9 +117,12 @@ export async function generateTutorReply(
   onSegment?: (segment: SpeechSegment) => void,
 ): Promise<TutorReply> {
   const { models } = await readSettings();
+  // In the system prompt rather than each turn: it is the same text all session, so it is written to
+  // the cache once and read back at a tenth of the price on every turn after the first.
+  const material = session.materialId ? (await readMaterials()).find((m) => m.id === session.materialId) : undefined;
   const reply = await generateStructured(models.tutor, {
     feature: "tutor",
-    system: tutorSystemPrompt(),
+    system: tutorSystemPrompt(material),
     messages: toMessages(session),
     schema: TutorReplySchema,
     signal,

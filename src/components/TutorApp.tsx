@@ -10,6 +10,7 @@ import {
   PROVIDER_LABELS,
   GRAMMAR_TOPICS,
   CUSTOM_TOPIC_ID,
+  MATERIAL_MAX_CHARS,
   ROLEPLAY_SCENARIOS,
   SCENARIO_CATEGORY_LABELS,
   SPEECH_SPEED_RANGE,
@@ -18,6 +19,7 @@ import {
   voiceRegister,
   type ScenarioCategory,
   type CefrLevel,
+  type Material,
   type AppSettings,
   type AvatarSettings,
   type ChatTurn,
@@ -294,13 +296,13 @@ export function TutorApp() {
   );
 
   const startSession = useCallback(
-    async (mode: TutorMode, scenarioId: string | null, topic: string | null) => {
+    async (mode: TutorMode, scenarioId: string | null, topic: string | null, materialId: string | null) => {
       setError(null);
       setReview(null);
       setStatus("thinking");
       let created: Session;
       try {
-        ({ session: created } = await api.post<{ session: Session }>("/api/session", { mode, scenarioId, topic }));
+        ({ session: created } = await api.post<{ session: Session }>("/api/session", { mode, scenarioId, topic, materialId }));
       } catch (e) {
         setError(errorMessage(e));
         setStatus("idle");
@@ -699,7 +701,7 @@ export function TutorApp() {
             )}
           </div>
         ) : (
-          <SessionPicker busy={busy} onStart={(m, s, t) => void startSession(m, s, t)} />
+          <SessionPicker busy={busy} onStart={(m, s, t, mat) => void startSession(m, s, t, mat)} />
         )}
         <div className="voice-picker">
           <div className="voice-toggle" role="radiogroup" aria-label="Tutor voice">
@@ -885,12 +887,57 @@ const TOPIC_HINTS = {
   roleplay_detail: "e.g. I'm a data engineer, the client is in Lyon",
 } as const;
 
-function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: TutorMode, scenarioId: string | null, topic: string | null) => void }) {
+/** A saved text, as the list sends it: everything but the text itself, which is only needed server-side. */
+type MaterialSummary = Omit<Material, "text"> & { preview: string };
+
+function SessionPicker({
+  busy,
+  onStart,
+}: {
+  busy: boolean;
+  onStart: (mode: TutorMode, scenarioId: string | null, topic: string | null, materialId: string | null) => void;
+}) {
   const [mode, setMode] = useState<TutorMode>("conversation");
   const [scenarioId, setScenarioId] = useState(ROLEPLAY_SCENARIOS[0].id);
   const [topicId, setTopicId] = useState(GRAMMAR_TOPICS[0].id);
   const [topic, setTopic] = useState("");
   const [mistakes, setMistakes] = useState<Record<string, number>>({});
+  const [materials, setMaterials] = useState<MaterialSummary[]>([]);
+  const [materialId, setMaterialId] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ title: "", text: "" });
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const usesMaterial = mode === "conversation" || mode === "lesson" || mode === "oral_quiz";
+
+  useEffect(() => {
+    api
+      .get<{ materials: MaterialSummary[] }>("/api/material")
+      .then((r) => setMaterials(r.materials))
+      .catch(() => undefined);
+  }, []);
+
+  const saveMaterial = async () => {
+    setSaving(true);
+    setProblem(null);
+    try {
+      const { material } = await api.post<{ material: MaterialSummary }>("/api/material", draft);
+      setMaterials((list) => [material, ...list]);
+      setMaterialId(material.id);
+      setDraft({ title: "", text: "" });
+      setAdding(false);
+    } catch (e) {
+      setProblem(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeMaterial = async (id: string) => {
+    setMaterials((list) => list.filter((m) => m.id !== id));
+    if (materialId === id) setMaterialId("");
+    await api.del(`/api/material?id=${encodeURIComponent(id)}`).catch(() => undefined);
+  };
   const scenario = ROLEPLAY_SCENARIOS.find((s) => s.id === scenarioId);
   const grammar = GRAMMAR_TOPICS.find((t) => t.id === topicId);
 
@@ -971,6 +1018,52 @@ function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: Tutor
           />
         </label>
       )}
+      {usesMaterial && (
+        <div className="field">
+          <span>Work from a text you&rsquo;ve shared (optional)</span>
+          <div className="row">
+            <select className="input" value={materialId} onChange={(e) => setMaterialId(e.target.value)} disabled={adding}>
+              <option value="">Nothing — just talk</option>
+              {materials.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.title} · {m.words} words
+                </option>
+              ))}
+            </select>
+            <button type="button" className="btn btn--ghost" onClick={() => setAdding((a) => !a)}>
+              {adding ? "Cancel" : "Add a text"}
+            </button>
+            {materialId && !adding && (
+              <button type="button" className="btn btn--ghost" onClick={() => void removeMaterial(materialId)} title="Remove this text from your library">
+                Remove
+              </button>
+            )}
+          </div>
+          {adding ? (
+            <>
+              <input className="input" placeholder="A name for it (optional)" value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} />
+              <textarea
+                className="input"
+                rows={7}
+                placeholder="Paste an article, an email, a transcript — anything you want to talk about in French."
+                value={draft.text}
+                onChange={(e) => setDraft((d) => ({ ...d, text: e.target.value }))}
+              />
+              <div className="row">
+                <button type="button" className="btn" disabled={saving || !draft.text.trim()} onClick={() => void saveMaterial()}>
+                  {saving ? "Saving…" : "Save it"}
+                </button>
+                <span className="small muted">
+                  {draft.text.length.toLocaleString()} / {MATERIAL_MAX_CHARS.toLocaleString()} characters
+                </span>
+              </div>
+            </>
+          ) : (
+            materialId && <span className="small">{materials.find((m) => m.id === materialId)?.preview}…</span>
+          )}
+          {problem && <span className="small alert">{problem}</span>}
+        </div>
+      )}
       <button
         className="btn btn--primary"
         disabled={busy || ((mode === "roleplay" ? scenarioId === CUSTOM_SCENARIO_ID : mode === "lesson" && topicId === CUSTOM_TOPIC_ID) && !topic.trim())}
@@ -981,6 +1074,7 @@ function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: Tutor
             // A chosen lesson travels as its name plus what it covers, so she teaches this corner of
             // the grammar and not the whole tense. The session prompt reads topic and needs no change.
             mode === "lesson" && grammar ? `${grammar.title} - ${grammar.brief}` : topic.trim() || null,
+            usesMaterial ? materialId || null : null,
           )
         }
       >

@@ -154,11 +154,34 @@ export interface VerifiedCorrection extends Correction {
   verdict: "confirmed" | "amended" | "wrong";
 }
 
+/**
+ * Something the student has brought to the lesson: an article, an email, a transcript. Kept so one
+ * text can seed a conversation today and a lesson next week.
+ */
+export interface Material {
+  id: string;
+  title: string;
+  text: string;
+  addedAt: string;
+  lastUsedAt: string | null;
+  /** Counted once when it is saved, so the picker can say how long it is. */
+  words: number;
+}
+
+/**
+ * Long enough for a newspaper article, short enough that it doesn't dominate the prompt: the text
+ * sits in the system prompt for the whole session, so its size is paid on every turn (cached, at a
+ * tenth of the price, but paid).
+ */
+export const MATERIAL_MAX_CHARS = 12_000;
+
 export interface Session {
   id: string;
   mode: TutorMode;
   scenarioId: string | null;
   topic: string | null;
+  /** The text this session is about, if the student brought one. */
+  materialId?: string | null;
   startedAt: string;
   endedAt: string | null;
   turns: ChatTurn[];

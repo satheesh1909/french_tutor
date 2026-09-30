@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
 import { averageFluency } from "./fluency";
-import { END_SILENCE_RANGE, SPEECH_SPEED_RANGE, type AppSettings, type KeyProvider, type KeyStatus, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
+import { END_SILENCE_RANGE, SPEECH_SPEED_RANGE, type AppSettings, type Material, type KeyProvider, type KeyStatus, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
 
 // Single-user app: plain JSON files in ./data are easy to inspect, back up, and edit by hand.
 
@@ -188,6 +188,9 @@ export async function geminiKey(): Promise<string | undefined> {
 export type UsageLog = Record<string, Record<string, UsageTotals>>;
 export const readUsage = () => readJson<UsageLog>(file("usage.json"), {});
 export const writeUsage = (usage: UsageLog) => writeJson(file("usage.json"), usage);
+
+export const readMaterials = () => readJson<Material[]>(file("materials.json"), []);
+export const writeMaterials = (materials: Material[]) => writeJson(file("materials.json"), materials);
 
 export const readMistakes = () => readJson<MistakeRecord[]>(file("mistakes.json"), []);
 export const writeMistakes = (mistakes: MistakeRecord[]) => writeJson(file("mistakes.json"), mistakes);
