@@ -65,7 +65,9 @@ export async function GET() {
   const [ollama, whisper, avatarServer, voiceServer, claude, gemini] = await Promise.all([
     ollamaStatus(),
     whisperStatus(),
-    settings.avatar.mode === "photo" ? avatarStatus() : Promise.resolve(null),
+    // Both photo modes need this server: "photo" renders the video, and either one needs it to
+    // list the portraits and to take a new one, because it is what finds the face in the picture.
+    settings.avatar.mode === "photo" || settings.avatar.mode === "still" ? avatarStatus() : Promise.resolve(null),
     localVoiceStatus(settings.voice.provider, settings.voice),
     hasClaudeCredentials(),
     hasGeminiKey(),

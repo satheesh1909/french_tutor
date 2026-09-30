@@ -1074,7 +1074,9 @@ function AvatarPanel({ avatar, onChange }: { avatar: AvatarSettings; onChange: (
   };
 
   useEffect(() => {
-    if (avatar.mode !== "photo") return;
+    // "still" wears a portrait too, and choosing or adding one needs this server - it is what finds
+    // the face in the picture. Only the rendering of video is particular to "photo".
+    if (avatar.mode !== "photo" && avatar.mode !== "still") return;
     const check = () =>
       api
         .get<{ avatarServer: typeof server }>("/api/health")
