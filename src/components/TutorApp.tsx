@@ -8,6 +8,8 @@ import {
   GEMINI_VOICES,
   MODE_LABELS,
   PROVIDER_LABELS,
+  GRAMMAR_TOPICS,
+  CUSTOM_TOPIC_ID,
   ROLEPLAY_SCENARIOS,
   SCENARIO_CATEGORY_LABELS,
   SPEECH_SPEED_RANGE,
@@ -15,6 +17,7 @@ import {
   VOICE_REGISTERS,
   voiceRegister,
   type ScenarioCategory,
+  type CefrLevel,
   type AppSettings,
   type AvatarSettings,
   type ChatTurn,
@@ -665,7 +668,8 @@ export function TutorApp() {
           <div className="stage-controls">
             <p className="session-tag">
               {MODE_LABELS[session.mode].title}
-              {scenario ? ` · ${scenario.title}` : session.topic ? ` · ${session.topic}` : ""}
+              {/* A chosen lesson carries its brief in the topic too; the header only wants the name. */}
+              {scenario ? ` · ${scenario.title}` : session.topic ? ` · ${session.topic.split(" - ")[0]}` : ""}
             </p>
             {status === "speaking" && (
               <button
@@ -862,6 +866,11 @@ const SCENARIO_GROUPS: [ScenarioCategory, typeof ROLEPLAY_SCENARIOS][] = (["ever
   ROLEPLAY_SCENARIOS.filter((s) => s.category === category),
 ]);
 
+/** The grammar list, in the order a learner meets it. */
+const TOPIC_GROUPS: [CefrLevel, typeof GRAMMAR_TOPICS][] = (["A2", "B1", "B2"] as CefrLevel[])
+  .map((level): [CefrLevel, typeof GRAMMAR_TOPICS] => [level, GRAMMAR_TOPICS.filter((t) => t.level === level)])
+  .filter(([, topics]) => topics.length > 0);
+
 const TOPIC_LABELS = {
   conversation: "Topic (optional)",
   lesson: "Grammar point (optional)",
@@ -879,8 +888,21 @@ const TOPIC_HINTS = {
 function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: TutorMode, scenarioId: string | null, topic: string | null) => void }) {
   const [mode, setMode] = useState<TutorMode>("conversation");
   const [scenarioId, setScenarioId] = useState(ROLEPLAY_SCENARIOS[0].id);
+  const [topicId, setTopicId] = useState(GRAMMAR_TOPICS[0].id);
   const [topic, setTopic] = useState("");
+  const [mistakes, setMistakes] = useState<Record<string, number>>({});
   const scenario = ROLEPLAY_SCENARIOS.find((s) => s.id === scenarioId);
+  const grammar = GRAMMAR_TOPICS.find((t) => t.id === topicId);
+
+  // Only when a lesson is actually being chosen: how often each kind of mistake has been made, so
+  // the list can say where the student's own trouble is rather than just listing the syllabus.
+  useEffect(() => {
+    if (mode !== "lesson" || Object.keys(mistakes).length) return;
+    api
+      .get<{ categories: { category: string; count: number }[] }>("/api/progress")
+      .then((r) => setMistakes(Object.fromEntries(r.categories.map((c) => [c.category, c.count]))))
+      .catch(() => undefined);
+  }, [mode, mistakes]);
 
   return (
     <div className="picker">
@@ -913,7 +935,32 @@ function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: Tutor
           {scenario && <span className="small">{scenario.brief}</span>}
         </label>
       )}
-      {(mode === "conversation" || mode === "lesson" || mode === "roleplay") && (
+      {mode === "lesson" && (
+        <label className="field">
+          <span>What shall we work on?</span>
+          <select className="input" value={topicId} onChange={(e) => setTopicId(e.target.value)}>
+            {TOPIC_GROUPS.map(([level, topics]) => (
+              <optgroup key={level} label={level}>
+                {topics.map((t) => {
+                  const n = mistakes[t.category] ?? 0;
+                  return (
+                    <option key={t.id} value={t.id}>
+                      {t.title}
+                      {/* The count is for the whole area, which several lessons can share - so say so. */}
+                      {n > 0 ? ` — ${n} mistake${n === 1 ? "" : "s"} in this area` : ""}
+                    </option>
+                  );
+                })}
+              </optgroup>
+            ))}
+            <optgroup label="Your own">
+              <option value={CUSTOM_TOPIC_ID}>Something else…</option>
+            </optgroup>
+          </select>
+          {grammar && <span className="small">{grammar.brief}</span>}
+        </label>
+      )}
+      {(mode === "conversation" || (mode === "lesson" && topicId === CUSTOM_TOPIC_ID) || mode === "roleplay") && (
         <label className="field">
           <span>{TOPIC_LABELS[mode === "roleplay" && scenario ? "roleplay_detail" : mode]}</span>
           <input
@@ -926,8 +973,16 @@ function SessionPicker({ busy, onStart }: { busy: boolean; onStart: (mode: Tutor
       )}
       <button
         className="btn btn--primary"
-        disabled={busy || (mode === "roleplay" && scenarioId === CUSTOM_SCENARIO_ID && !topic.trim())}
-        onClick={() => onStart(mode, mode === "roleplay" ? scenarioId : null, topic.trim() || null)}
+        disabled={busy || ((mode === "roleplay" ? scenarioId === CUSTOM_SCENARIO_ID : mode === "lesson" && topicId === CUSTOM_TOPIC_ID) && !topic.trim())}
+        onClick={() =>
+          onStart(
+            mode,
+            mode === "roleplay" ? scenarioId : null,
+            // A chosen lesson travels as its name plus what it covers, so she teaches this corner of
+            // the grammar and not the whole tense. The session prompt reads topic and needs no change.
+            mode === "lesson" && grammar ? `${grammar.title} - ${grammar.brief}` : topic.trim() || null,
+          )
+        }
       >
         {busy ? "Starting…" : "Commencer"}
       </button>

@@ -273,6 +273,56 @@ export interface RoleplayScenario {
 /** Picked in the session picker to role-play a situation the student describes in their own words. */
 export const CUSTOM_SCENARIO_ID = "custom";
 
+export interface GrammarTopic {
+  id: string;
+  /** The French name, because that is what a French course would call it. */
+  title: string;
+  level: CefrLevel;
+  /** The kind of mistake it addresses, so the picker can show how often they have made it. */
+  category: ErrorCategory;
+  /** What the lesson covers. Sent to the tutor as well, so she teaches this and not the whole tense. */
+  brief: string;
+}
+
+/** Picked in the session picker to learn a grammar point the student names themselves. */
+export const CUSTOM_TOPIC_ID = "custom";
+
+/**
+ * The grammar a learner going A2 -> B1 -> B2 actually has to get through, in the order they meet it.
+ * Each one names the kind of mistake it fixes, so the picker can say "you have made this mistake
+ * sixteen times" against the lesson that would help - a list of everything is not the same as
+ * knowing where to start.
+ */
+export const GRAMMAR_TOPICS: GrammarTopic[] = [
+  { id: "articles", title: "Les articles et les contractions", level: "A2", category: "articles_contractions", brief: "le, la, les, un, du, de la - and what happens when à and de meet le and les: au, aux, du, des." },
+  { id: "gender", title: "Le genre des noms", level: "A2", category: "gender", brief: "Masculine or feminine: the endings that tell you, and the common nouns that catch everyone out." },
+  { id: "present", title: "Le présent", level: "A2", category: "conjugation", brief: "-er, -ir and -re verbs, plus être, avoir, aller and faire, which you need in almost every sentence." },
+  { id: "passe-compose", title: "Le passé composé avec avoir", level: "A2", category: "tense_choice", brief: "Saying what you did: avoir, past participles, and where the negation goes around them." },
+  { id: "etre-auxiliary", title: "Le passé composé avec être", level: "A2", category: "auxiliary", brief: "The verbs that take être instead of avoir, reflexive verbs, and making the participle agree." },
+  { id: "negation", title: "La négation", level: "A2", category: "negation", brief: "ne...pas, jamais, rien, personne, plus: where each half goes, and what changes in the passé composé." },
+  { id: "adjectives", title: "Les adjectifs", level: "A2", category: "agreement", brief: "Making adjectives agree, and the handful that go before the noun rather than after it." },
+  { id: "prepositions-lieu", title: "Les prépositions de lieu", level: "A2", category: "prepositions", brief: "à, en, au, chez, dans: which one for a city, a country, a friend's house, a shop." },
+
+  { id: "pc-vs-imparfait", title: "Passé composé ou imparfait ?", level: "B1", category: "tense_choice", brief: "The choice that decides whether a story sounds French: what happened, against what was going on around it." },
+  { id: "conditionnel", title: "Le conditionnel présent", level: "B1", category: "si_clauses_conditional", brief: "je voudrais, pourriez-vous: asking politely, and saying what you would do." },
+  { id: "si-clauses", title: "Les phrases avec si", level: "B1", category: "si_clauses_conditional", brief: "si + imparfait then conditionnel: si j'avais le temps, je viendrais. Never si + conditionnel." },
+  { id: "y-en", title: "Les pronoms y et en", level: "B1", category: "pronouns", brief: "j'y vais, j'en ai deux: replacing a place, and replacing de plus something." },
+  { id: "object-pronouns", title: "Les pronoms COD et COI", level: "B1", category: "pronouns", brief: "le, la, les against lui, leur: which verbs take which, and where the pronoun sits." },
+  { id: "relatives", title: "Les pronoms relatifs qui, que, où", level: "B1", category: "pronouns", brief: "Joining two ideas into one sentence, and the qui/que choice that depends on what follows." },
+  { id: "futur", title: "Le futur proche et le futur simple", level: "B1", category: "tense_choice", brief: "je vais partir against je partirai, the irregular stems, and quand followed by the future." },
+  { id: "comparatif", title: "Le comparatif et le superlatif", level: "B1", category: "word_order", brief: "plus que, moins que, aussi que, le meilleur - and the irregular bon/meilleur, bien/mieux." },
+  { id: "depuis", title: "Depuis, pendant, il y a", level: "B1", category: "prepositions", brief: "How long, for how long, how long ago - and the tense French uses where English would not." },
+  { id: "register", title: "Tu ou vous ?", level: "B1", category: "register", brief: "Who you tutoie and who you vouvoie, how to move between them, and how it sounds when it slips." },
+  { id: "elision", title: "L'élision et la liaison", level: "B1", category: "elision_euphony", brief: "qu'il, l'ami, mon amie, cet homme: when French drops or changes a sound to stay easy to say." },
+
+  { id: "subjonctif", title: "Le subjonctif présent", level: "B2", category: "subjunctive", brief: "How it is formed, and the triggers that demand it: il faut que, bien que, pour que, je veux que." },
+  { id: "dont-lequel", title: "Les pronoms relatifs dont et lequel", level: "B2", category: "pronouns", brief: "The relative pronouns that carry a preposition with them, and how to choose between them." },
+  { id: "plus-que-parfait", title: "Le plus-que-parfait", level: "B2", category: "tense_choice", brief: "The past before the past: j'avais déjà mangé quand il est arrivé." },
+  { id: "passive", title: "La voix passive, et comment l'éviter", level: "B2", category: "word_order", brief: "être plus participe passé, and the on and se constructions French reaches for instead." },
+  { id: "gerondif", title: "Le gérondif", level: "B2", category: "word_order", brief: "en mangeant, en arrivant: doing two things at once, and saying how something is done." },
+  { id: "pronoun-order", title: "L'ordre des pronoms", level: "B2", category: "word_order", brief: "je le lui donne: what order pronouns go in when a sentence needs more than one." },
+];
+
 // ---------------------------------------------------------------------------
 // Settings: which AI does which job, and how the tutor sounds
 // ---------------------------------------------------------------------------
