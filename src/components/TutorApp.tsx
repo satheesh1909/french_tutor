@@ -555,6 +555,25 @@ export function TutorApp() {
 
   const toggleMic = () => void (wantsMic.current ? stopListening() : startListening());
 
+  /**
+   * Hands-free waits for a pause to decide you've finished, and that pause is dead time on every
+   * turn. A tap of Space says so outright. It is the same key that holds the microphone open in
+   * push-to-talk, so there is one key for "this is my turn" either way - and a button you have to
+   * find with the mouse is no use while you are in the middle of speaking French.
+   */
+  useEffect(() => {
+    if (!active || !handsFree) return;
+    const typing = (el: EventTarget | null) =>
+      el instanceof HTMLElement && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.tagName === "SELECT" || el.isContentEditable);
+    const done = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || typing(e.target)) return;
+      e.preventDefault(); // Space would otherwise scroll the page
+      listener.current?.finishNow();
+    };
+    window.addEventListener("keydown", done);
+    return () => window.removeEventListener("keydown", done);
+  }, [active, handsFree]);
+
   // Hold Space to talk (unless typing in a field). Not needed in hands-free mode.
   useEffect(() => {
     if (!active || handsFree) return;
@@ -771,8 +790,8 @@ export function TutorApp() {
           ) : null}
           {handsFree && <MicLevel meter={meter} endSilenceMs={conversation?.endSilenceMs ?? 2000} paused={micPaused} />}
           {handsFree && status === "hearing" && (
-            <button className="btn btn--ghost" onClick={() => listener.current?.finishNow()} title="Don't wait for the pause">
-              Send now
+            <button className="btn" onClick={() => listener.current?.finishNow()} title="Send straight away instead of waiting for the pause">
+              I&rsquo;ve finished <kbd>Space</kbd>
             </button>
           )}
           {!handsFree && (
