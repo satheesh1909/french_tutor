@@ -204,6 +204,9 @@ export async function PUT(req: Request) {
               : current.conversation.endSilenceMs,
           sensitivity: MIC_SENSITIVITIES.includes(c.sensitivity as MicSensitivity) ? (c.sensitivity as MicSensitivity) : current.conversation.sensitivity,
           bargeIn: typeof c.bargeIn === "boolean" ? c.bargeIn : current.conversation.bargeIn,
+          earlyTranscribe: typeof c.earlyTranscribe === "boolean" ? c.earlyTranscribe : current.conversation.earlyTranscribe,
+          adaptivePause: typeof c.adaptivePause === "boolean" ? c.adaptivePause : current.conversation.adaptivePause,
+          thinkingSound: typeof c.thinkingSound === "boolean" ? c.thinkingSound : current.conversation.thinkingSound,
         },
         updatedAt: new Date().toISOString(),
       };

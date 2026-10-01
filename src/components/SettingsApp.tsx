@@ -658,6 +658,38 @@ function ConversationPanel({ value, onChange }: { value: ConversationSettings; o
           hear herself; turn this off if she keeps stopping mid-sentence.
         </span>
       </label>
+      <h3>Keeping up with you</h3>
+      <p className="small">
+        Three ways of shortening the wait before she answers. The Progress page records how long turns actually take, so turning one of these off and
+        speaking a few turns shows what it was worth rather than leaving it to impression.
+      </p>
+      <label className="switch">
+        <input type="checkbox" checked={value.earlyTranscribe} disabled={!value.handsFree} onChange={(e) => set({ earlyTranscribe: e.target.checked })} />
+        <span>
+          <strong>Start listening the moment I pause:</strong> transcription begins a quarter of a second into your pause instead of waiting for the
+          pause to prove your turn is over, so by the time it is, most of the work is done. It is the same recording either way, so what she hears you
+          say is unchanged.
+        </span>
+      </label>
+      <label className="switch">
+        <input
+          type="checkbox"
+          checked={value.adaptivePause}
+          disabled={!value.handsFree || !value.earlyTranscribe}
+          onChange={(e) => set({ adaptivePause: e.target.checked })}
+        />
+        <span>
+          <strong>Fit the pause to the sentence:</strong> a finished sentence is sent sooner than the pause above, and one that trails off mid-thought
+          is given longer. On a long answer the words arrive too late to help and the pause above is used as it stands.
+        </span>
+      </label>
+      <label className="switch">
+        <input type="checkbox" checked={value.thinkingSound} onChange={(e) => set({ thinkingSound: e.target.checked })} />
+        <span>
+          <strong>Let her think out loud:</strong> a short &ldquo;mmh&rdquo; in her own voice while she works out an answer, the way a person fills a
+          gap, instead of silence. It is skipped whenever the reply arrives quickly.
+        </span>
+      </label>
     </section>
   );
 }

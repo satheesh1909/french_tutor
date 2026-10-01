@@ -39,11 +39,14 @@ import {
   type LocalVoiceStatus,
 } from "@/lib/types";
 import { averageFluency, PACE_GUIDE, type FluencyStats } from "@/lib/fluency";
+import { endpointFor } from "@/lib/endpoint";
 import { api, errorMessage } from "./api";
 import { clipFromSamples, concatAudio, type RecordedClip } from "./audioClip";
 import { AvatarStage, type StageState } from "./AvatarStage";
 import { photoPlayer } from "./photoAvatar";
-import { VoiceActivityListener, type MicMeter } from "./handsFree";
+import { VoiceActivityListener, type MicMeter, type UtteranceInfo } from "./handsFree";
+import { thinkingSound, type ThinkingSound } from "./thinkingSound";
+import { startTurnClock, type TurnClock } from "./turnClock";
 import { useRecorder } from "./useRecorder";
 import { voicePlayer, type LevelRef } from "./voice";
 import { speakInOrder, withFallback, type SpeechPlayer } from "./speechQueue";
@@ -102,6 +105,23 @@ interface SendOptions {
   /** Earlier answers this one replaces (hands-free: the student kept talking). */
   supersedes?: string[];
   signal?: AbortSignal;
+  /** Stopwatch for this turn, if it is being timed. */
+  clock?: TurnClock;
+}
+
+/**
+ * Transcription started while the student was still inside their pause.
+ *
+ * `samples` is how much of the turn it covers. When the turn ends, that is compared with the finished
+ * recording: if the student simply stopped, the two are the same bar a little trailing silence and
+ * this result is the turn's transcript, already most of the way done. If they carried on, it covers
+ * only part of what they said and is thrown away.
+ */
+interface EarlyTranscript {
+  samples: number;
+  sampleRate: number;
+  result: Promise<{ text: string; fluency?: FluencyStats; heard?: HeardLanguage }>;
+  controller: AbortController;
 }
 
 /** A spoken answer that has been sent but not yet replied to; kept so it can be merged if the student continues. */
@@ -128,6 +148,16 @@ async function transcribeClip(clip: RecordedClip, signal?: AbortSignal): Promise
   };
   if (!res.ok) throw new Error(data.error ?? "Transcription failed.");
   return { text: data.text?.trim() ?? "", fluency: data.fluency ?? undefined, heard: data.heard ?? undefined };
+}
+
+/** The whole turn at once: what happens when transcribing alongside the speech is switched off. */
+async function transcribeWhole(
+  samples: Float32Array,
+  sampleRate: number,
+  signal?: AbortSignal,
+): Promise<{ text: string; fluency?: FluencyStats; heard?: HeardLanguage }> {
+  const clip = await clipFromSamples(samples, sampleRate);
+  return clip ? transcribeClip(clip, signal) : { text: "" };
 }
 
 const NOT_CAUGHT = "I didn't catch that. Try again, a little closer to the mic.";
@@ -194,7 +224,18 @@ export function TutorApp() {
   const listener = useRef<VoiceActivityListener | null>(null);
   const meter = useRef<MicMeter>({ level: 0, threshold: 0, speaking: false, silenceSec: 0 });
   const pending = useRef<PendingAnswer | null>(null);
-  const listenerEvents = useRef({ speechStart: () => {}, utterance: (_s: Float32Array, _r: number) => {}, discard: () => {} });
+  /** Transcription of the current turn, started during a pause in it. */
+  const early = useRef<EarlyTranscript | null>(null);
+  const thinking = useRef<ThinkingSound | null>(null);
+  const conversationRef = useRef<ConversationSettings | null>(null);
+  /** The turn being timed right now, so the thinking noise can mark the turn it belongs to. */
+  const turnClock = useRef<TurnClock | null>(null);
+  const listenerEvents = useRef({
+    speechStart: () => {},
+    utterance: (_s: Float32Array, _r: number, _i: UtteranceInfo) => {},
+    discard: () => {},
+    early: (_s: Float32Array, _r: number) => {},
+  });
   const avatarVideo = useRef<HTMLVideoElement | null>(null);
 
   const tutorName = health?.tutorName ?? "Charlotte";
@@ -214,6 +255,26 @@ export function TutorApp() {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    conversationRef.current = conversation;
+  }, [conversation]);
+
+  /**
+   * Her thinking noise, rebuilt whenever the voice changes so it is always her current voice. Making
+   * the phrases also warms the voice server, which is why it happens when a session opens rather than
+   * at the first pause - the first turn of a session used to be the slowest of the lot.
+   */
+  useEffect(() => {
+    if (!voiceSettings || !active) return;
+    const sound = thinkingSound(voiceSettings, level, () => turnClock.current?.mark("firstSound"));
+    thinking.current = sound;
+    if (conversationRef.current?.thinkingSound) sound.prepare();
+    return () => {
+      sound.release();
+      if (thinking.current === sound) thinking.current = null;
+    };
+  }, [voiceSettings, active, level]);
 
   useEffect(() => {
     api
@@ -257,12 +318,30 @@ export function TutorApp() {
    * Status only becomes "speaking" once there is something to hear, so the caption stays honest.
    */
   const openVoice = useCallback(
-    (geminiVoice?: string) => {
+    (geminiVoice?: string, onPlay?: () => void) => {
       stopSpeaking();
       const controller = new AbortController();
       speaking.current = controller;
       if (listener.current) listener.current.tutorSpeaking = true;
-      const queue = speakInOrder(buildPlayer(geminiVoice), controller.signal);
+      // Wrapped so the stopwatch learns when a segment is really heard, which is after it has been
+      // made and, if the reply ran ahead, after it was allowed - not when it was handed over.
+      const base = buildPlayer(geminiVoice);
+      const player: SpeechPlayer = onPlay
+        ? {
+            release: () => base.release(),
+            async render(segment, signal) {
+              const ready = await base.render(segment, signal);
+              return {
+                release: () => ready.release(),
+                play: () => {
+                  onPlay();
+                  return ready.play();
+                },
+              };
+            },
+          }
+        : base;
+      const queue = speakInOrder(player, controller.signal);
       const done = queue.finished().finally(() => {
         if (speaking.current === controller) {
           speaking.current = null;
@@ -341,7 +420,11 @@ export function TutorApp() {
 
       // Opened before the request, so her sentences can be spoken as they arrive rather than after
       // the last one is written. An answer that supersedes this one also stops this one's voice.
-      const voice = openVoice();
+      const voice = openVoice(undefined, () => {
+        thinking.current?.cancel(); // she is talking now; stop humming over her
+        options.clock?.mark("firstSound");
+        options.clock?.mark("words");
+      });
       options.signal?.addEventListener("abort", () => voice.controller.abort(), { once: true });
 
       let result: { studentTurn: ChatTurn; tutorTurn: ChatTurn } | null = null;
@@ -359,7 +442,10 @@ export function TutorApp() {
           },
           options.signal,
         )) {
-          if (line.type === "segment") voice.say(line.segment);
+          if (line.type === "segment") {
+            options.clock?.mark("firstSegment");
+            voice.say(line.segment);
+          }
           else if (line.type === "turn") result = { studentTurn: line.studentTurn, tutorTurn: line.tutorTurn };
           else if (line.type === "error") throw new Error(line.error);
         }
@@ -397,28 +483,94 @@ export function TutorApp() {
   // Hands-free conversation
   // ---------------------------------------------------------------------------
 
+  /** Abandons a transcription started during a pause the student then talked through. */
+  const dropEarly = useCallback(() => {
+    early.current?.controller.abort();
+    early.current = null;
+  }, []);
+
+  /**
+   * Starts transcribing as soon as the student pauses, on everything they have said so far.
+   *
+   * The pause that ends a turn is the same pause this fires on, so what is sent is almost always the
+   * whole turn: by the time the pause has lasted long enough to be official, the transcript is most of
+   * the way done. If they carry on, the work is thrown away - it is local, so it costs nothing but a
+   * little idle GPU, and never a word of what they said.
+   */
+  const transcribeEarly = useCallback(
+    (samples: Float32Array, sampleRate: number) => {
+      if (!conversationRef.current?.earlyTranscribe || !sessionRef.current) return;
+      dropEarly();
+      const controller = new AbortController();
+      const result = transcribeWhole(samples, sampleRate, controller.signal);
+      result.catch(() => undefined); // held on the promise; whoever awaits it deals with it
+      early.current = { samples: samples.length, sampleRate, result, controller };
+      // What they have said is now known, so the pause can be made to fit the sentence. On a long turn
+      // this lands after the turn is already over and changes nothing, which is why it only ever
+      // shortens or lengthens the wait rather than ending the turn itself.
+      void result
+        .then((heard) => {
+          const settings = conversationRef.current;
+          if (!settings?.adaptivePause || !heard.text || controller.signal.aborted) return;
+          listener.current?.update({ endSilenceMs: endpointFor(heard.text, settings.endSilenceMs).waitMs });
+        })
+        .catch(() => undefined);
+    },
+    [dropEarly],
+  );
+
   /**
    * A finished spoken answer. If the previous answer is still being processed (the student paused,
    * then carried on), that processing was cancelled when they started again, and both parts are
    * sent together as one answer.
    */
   const handleUtterance = useCallback(
-    async (samples: Float32Array, sampleRate: number) => {
+    async (samples: Float32Array, sampleRate: number, info: UtteranceInfo) => {
+      const clock = startTurnClock();
+      clock.endedAt(info.endSilenceMs);
+      turnClock.current = clock;
+      const audioSec = samples.length / sampleRate;
+
       const previous = pending.current;
       let audio = samples;
+      let merged = false;
       if (previous) {
         previous.controller.abort();
         if (previous.sampleRate === sampleRate) {
           const startedAt = Date.now() - (samples.length / sampleRate) * 1000;
           const gapSec = Math.min(1, Math.max(0.3, (startedAt - previous.endedAt) / 1000));
           audio = concatAudio([previous.samples, new Float32Array(Math.round(gapSec * sampleRate)), samples]);
+          merged = true;
         }
       }
+
+      /**
+       * Can the transcription started during the pause be used? Only if it covers this same recording.
+       * It was taken a quarter of a second into the pause and this one is trimmed to a third, so the
+       * difference is a sliver of silence, which cannot change a word. Anything more means they went
+       * on talking after it was taken, and it describes only part of the answer.
+       */
+      const started = early.current;
+      const sameRecording =
+        started !== null &&
+        !merged &&
+        started.sampleRate === sampleRate &&
+        Math.abs(started.samples - audio.length) / sampleRate < 0.5;
+      early.current = null;
+      if (started && !sameRecording) {
+        started.controller.abort();
+        clock.restarted();
+      }
+
       const replaces = previous?.ids ?? [];
       if (audio.length === 0) {
         pending.current = null;
+        started?.controller.abort();
         return settle();
       }
+
+      // A noise while she thinks, cancelled the moment there is something real to hear.
+      if (conversationRef.current?.thinkingSound) thinking.current?.schedule();
 
       const id = crypto.randomUUID();
       const controller = new AbortController();
@@ -426,15 +578,17 @@ export function TutorApp() {
       if (replaces.length) setSession((s) => s && { ...s, turns: s.turns.filter((t) => !replaces.includes(t.clientTurnId ?? t.id)) });
       setStatus("transcribing");
       try {
-        const clip = await clipFromSamples(audio, sampleRate);
-        const heard = clip ? await transcribeClip(clip, controller.signal) : { text: "" };
+        const heard = sameRecording && started ? await started.result : await transcribeWhole(audio, sampleRate, controller.signal);
         if (controller.signal.aborted) return;
+        clock.mark("transcribed");
         if (!heard.text) {
           pending.current = null;
           setError(NOT_CAUGHT);
           return settle();
         }
-        await send(heard.text, "voice", { fluency: heard.fluency, heard: heard.heard, clientTurnId: id, supersedes: replaces, signal: controller.signal });
+        const sessionId = sessionRef.current?.id ?? "";
+        await send(heard.text, "voice", { fluency: heard.fluency, heard: heard.heard, clientTurnId: id, supersedes: replaces, signal: controller.signal, clock });
+        if (!controller.signal.aborted) clock.save({ model: health?.tutor.model ?? "", audioSec, early: Boolean(sameRecording), sessionId });
       } catch (e) {
         if (controller.signal.aborted) return;
         pending.current = null;
@@ -442,7 +596,7 @@ export function TutorApp() {
         settle();
       }
     },
-    [send, setStatus, settle],
+    [health, send, setStatus, settle],
   );
 
   useEffect(() => {
@@ -450,19 +604,26 @@ export function TutorApp() {
       // The student started talking: stop her voice, pause any processing, and listen.
       speechStart: () => {
         if (speaking.current) stopSpeaking();
+        thinking.current?.cancel();
         pending.current?.controller.abort();
+        dropEarly();
+        // Back to the pause they asked for; what they say may shorten or lengthen it again.
+        if (conversationRef.current) listener.current?.update({ endSilenceMs: conversationRef.current.endSilenceMs });
         setError(null);
         setStatus("hearing");
       },
-      utterance: (samples, rate) => void handleUtterance(samples, rate),
+      utterance: (samples, rate, info) => void handleUtterance(samples, rate, info),
+      early: (samples, rate) => transcribeEarly(samples, rate),
       // Just a noise. If that noise interrupted an answer in progress, send that answer again.
       discard: () => {
         const previous = pending.current;
-        if (previous?.controller.signal.aborted) void handleUtterance(new Float32Array(0), previous.sampleRate);
-        else settle();
+        dropEarly();
+        if (previous?.controller.signal.aborted) {
+          void handleUtterance(new Float32Array(0), previous.sampleRate, { endSilenceMs: 0, voicedSec: 0 });
+        } else settle();
       },
     };
-  }, [handleUtterance, stopSpeaking, setStatus, settle]);
+  }, [dropEarly, handleUtterance, transcribeEarly, stopSpeaking, setStatus, settle]);
 
   useEffect(() => {
     if (!handsFree || !conversation) return;
@@ -472,8 +633,9 @@ export function TutorApp() {
       level,
       meter: meter.current,
       onSpeechStart: () => listenerEvents.current.speechStart(),
-      onUtterance: (samples, rate) => listenerEvents.current.utterance(samples, rate),
+      onUtterance: (samples, rate, info) => listenerEvents.current.utterance(samples, rate, info),
       onDiscard: () => listenerEvents.current.discard(),
+      onEarly: (samples, rate) => listenerEvents.current.early(samples, rate),
     });
     let cancelled = false;
     created

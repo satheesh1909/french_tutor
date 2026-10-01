@@ -20,10 +20,16 @@ export interface WhisperResult {
   words: (WordTiming & { word: string })[];
 }
 
-export async function whisperTranscribe(wav: Buffer): Promise<WhisperResult> {
+/**
+ * `language` names the language instead of letting Whisper work it out. Detection is a second pass
+ * over the audio, so naming it is worth real time - but only name it when it is already known, from
+ * an earlier piece of the same turn. Guessing wrong transcribes French as confident English.
+ */
+export async function whisperTranscribe(wav: Buffer, language?: string): Promise<WhisperResult> {
+  const query = language === "fr" || language === "en" ? `?language=${language}` : "";
   let res: Response;
   try {
-    res = await fetch(`${config.whisper.url}/transcribe`, {
+    res = await fetch(`${config.whisper.url}/transcribe${query}`, {
       method: "POST",
       headers: { "content-type": "audio/wav" },
       body: new Uint8Array(wav),

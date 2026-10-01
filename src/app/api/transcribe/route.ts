@@ -13,9 +13,14 @@ const MAX_BYTES = 12 * 1024 * 1024; // about six minutes of 16 kHz speech
  * Receives a WAV recording and returns what the student said (mistakes included) plus their
  * speaking speed. Whisper's word timings give the most precise speed; without them, the browser's
  * own measurement of when the student was talking (the x-speech-timing header) is used.
+ *
+ * `?language=` names the language instead of letting Whisper detect it, which is a second pass over
+ * the audio. Only pass it when it is genuinely known: a wrong name is transcribed as fluent nonsense.
  */
 export async function POST(req: Request) {
   try {
+    const asked = new URL(req.url).searchParams.get("language");
+    const hint = asked === "fr" || asked === "en" ? asked : undefined;
     const audio = Buffer.from(await req.arrayBuffer());
     if (audio.length < 2_000) return NextResponse.json({ error: "The recording was empty." }, { status: 400 });
     if (audio.length > MAX_BYTES) {
@@ -28,7 +33,7 @@ export async function POST(req: Request) {
     const [geminiText, whisper] = await Promise.all([
       whisperOnly ? null : transcribe(audio, transcription.model),
       whisperOnly || transcription.whisperTiming
-        ? whisperTranscribe(audio).catch((err) => {
+        ? whisperTranscribe(audio, hint).catch((err) => {
             if (whisperOnly) throw err;
             return null; // timing is a bonus when Gemini does the words
           })
