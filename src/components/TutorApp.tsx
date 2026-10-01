@@ -232,6 +232,7 @@ export function TutorApp() {
   const turnClock = useRef<TurnClock | null>(null);
   const listenerEvents = useRef({
     speechStart: () => {},
+    speechConfirmed: () => {},
     utterance: (_s: Float32Array, _r: number, _i: UtteranceInfo) => {},
     discard: () => {},
     early: (_s: Float32Array, _r: number) => {},
@@ -267,7 +268,16 @@ export function TutorApp() {
    */
   useEffect(() => {
     if (!voiceSettings || !active) return;
-    const sound = thinkingSound(voiceSettings, level, () => turnClock.current?.mark("firstSound"));
+    const sound = thinkingSound(
+      voiceSettings,
+      level,
+      () => turnClock.current?.mark("firstSound"),
+      // Her voice, as far as the microphone is concerned - unless her real voice is already going,
+      // in which case that is what owns the flag and this must not clear it.
+      (sounding) => {
+        if (listener.current) listener.current.tutorSpeaking = sounding || speaking.current !== null;
+      },
+    );
     thinking.current = sound;
     if (conversationRef.current?.thinkingSound) sound.prepare();
     return () => {
@@ -602,15 +612,21 @@ export function TutorApp() {
   useEffect(() => {
     listenerEvents.current = {
       // The student started talking: stop her voice, pause any processing, and listen.
+      // A sound has started. Stopping her talking happens at once, because an interruption that is
+      // not instant is not an interruption - but nothing is thrown away yet, because this fires on a
+      // knock or a breath just as readily as on a word.
       speechStart: () => {
         if (speaking.current) stopSpeaking();
         thinking.current?.cancel();
-        pending.current?.controller.abort();
-        dropEarly();
         // Back to the pause they asked for; what they say may shorten or lengthen it again.
         if (conversationRef.current) listener.current?.update({ endSilenceMs: conversationRef.current.endSilenceMs });
         setError(null);
         setStatus("hearing");
+      },
+      // It really is speech. Now the reply being made for the last turn is worth abandoning.
+      speechConfirmed: () => {
+        pending.current?.controller.abort();
+        dropEarly();
       },
       utterance: (samples, rate, info) => void handleUtterance(samples, rate, info),
       early: (samples, rate) => transcribeEarly(samples, rate),
@@ -633,6 +649,7 @@ export function TutorApp() {
       level,
       meter: meter.current,
       onSpeechStart: () => listenerEvents.current.speechStart(),
+      onSpeechConfirmed: () => listenerEvents.current.speechConfirmed(),
       onUtterance: (samples, rate, info) => listenerEvents.current.utterance(samples, rate, info),
       onDiscard: () => listenerEvents.current.discard(),
       onEarly: (samples, rate) => listenerEvents.current.early(samples, rate),

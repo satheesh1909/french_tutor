@@ -35,8 +35,14 @@ export interface EndpointAdvice {
   reason: "finished" | "unfinished" | "unclear";
 }
 
-/** Waits for a finished sentence, and for one still being assembled. Both within the student's range. */
-export const ENDPOINT_WAIT = { finished: 550, unfinished: 1_500 };
+/**
+ * Waits for a finished sentence, and for one still plainly being assembled.
+ *
+ * The long one has to be longer than an ordinary pause, or it says nothing: a learner who has just
+ * trailed off on "avec, euh..." is hunting for a word, and that search takes longer than the gap they
+ * leave between two words they already know.
+ */
+export const ENDPOINT_WAIT = { finished: 550, unfinished: 2_200 };
 
 /**
  * `heardSoFar` is everything transcribed from this turn. `chosen` is the student's own pause setting,

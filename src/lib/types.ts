@@ -440,12 +440,19 @@ export interface ConversationSettings {
 }
 
 /**
- * How long a silence ends your turn. Two seconds was the original default and it dominated the wait
- * before she answered - a full quarter of it, before any work had started. Real conversation leaves
- * gaps of a few hundred milliseconds, so this now starts under a second and can go lower; the floor
- * is what stops an ordinary mid-sentence breath from sending half a thought.
+ * How long a silence ends your turn.
+ *
+ * Two seconds was the original default and it dominated the wait before she answered. It was cut to
+ * nine hundred milliseconds to win that time back, which was a mistake, and the recordings said so:
+ * two turns in five were ended mid-thought and had to be redone - cut after "avec", after "les",
+ * after "euh". Each of those cost a transcription and a reply that was thrown away, so the impatient
+ * setting was not even faster. It just spent the time somewhere less visible.
+ *
+ * So it is patient again, and the shortening is left to the one thing that can do it safely: once a
+ * sentence has been transcribed and looks finished, adaptivePause drops the wait well below this.
+ * Generous by default and quick when there is a reason, rather than the other way round.
  */
-export const END_SILENCE_RANGE = { min: 500, max: 4000, default: 900 };
+export const END_SILENCE_RANGE = { min: 500, max: 4000, default: 1500 };
 
 /**
  * How long one spoken turn took, stage by stage, measured in the browser.

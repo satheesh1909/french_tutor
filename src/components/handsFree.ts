@@ -66,6 +66,14 @@ export interface ListenerOptions {
   level: LevelRef;
   meter?: MicMeter;
   onSpeechStart: () => void;
+  /**
+   * The sound has lasted long enough to be speech rather than a knock or a breath.
+   *
+   * onSpeechStart fires on the first fifteen hundredths of a second, which is right for stopping her
+   * talking - an interruption has to feel instant - but far too eager for throwing away a reply that
+   * is halfway made. Anything irreversible waits for this.
+   */
+  onSpeechConfirmed?: () => void;
   onUtterance: (samples: Float32Array, sampleRate: number, info: UtteranceInfo) => void;
   /** Speech started but turned out too short to be a real turn. */
   onDiscard: () => void;
@@ -120,6 +128,8 @@ export class VoiceActivityListener {
   private loudSec = 0;
   private silenceSec = 0;
   private voicedSec = 0;
+  /** Whether this turn has yet proved to be speech. See onSpeechConfirmed. */
+  private confirmed = false;
   /** One early start per pause: without this, every quiet block in the same pause would fire again. */
   private startedThisPause = false;
   /** When in the turn the last early start happened, so they cannot come one after another. */
@@ -174,6 +184,7 @@ export class VoiceActivityListener {
     this.voicedSec = 0;
     this.startedThisPause = false;
     this.lastEarlySec = -EARLY_GAP_SEC;
+    this.confirmed = false;
   }
 
   /** Ends the current turn straight away (the "Send now" button). */
@@ -238,6 +249,10 @@ export class VoiceActivityListener {
       this.silenceSec = 0;
       this.voicedSec += sec;
       this.startedThisPause = false; // they carried on; the next pause is a fresh chance
+      if (!this.confirmed && this.voicedSec >= MIN_VOICED_SEC) {
+        this.confirmed = true;
+        this.options.onSpeechConfirmed?.();
+      }
     } else {
       this.silenceSec += sec;
     }

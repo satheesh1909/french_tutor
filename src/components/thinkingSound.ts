@@ -34,7 +34,18 @@ export interface ThinkingSound {
   release(): void;
 }
 
-export function thinkingSound(voice: VoiceSettings, level: LevelRef, onSound?: () => void): ThinkingSound {
+/**
+ * `onSound` marks the moment the noise is heard. `whileSounding` is told when it starts and stops, so
+ * the microphone can be made as deaf to it as it is to the rest of her voice: without that, a student
+ * on speakers rather than headphones has her thinking noise heard as the start of their own turn, and
+ * the reply she was busy making is thrown away.
+ */
+export function thinkingSound(
+  voice: VoiceSettings,
+  level: LevelRef,
+  onSound?: () => void,
+  whileSounding?: (sounding: boolean) => void,
+): ThinkingSound {
   let ctx: AudioContext | null = null;
   let buffers: (AudioBuffer | null)[] = [];
   let loading: Promise<void> | null = null;
@@ -98,11 +109,13 @@ export function thinkingSound(voice: VoiceSettings, level: LevelRef, onSound?: (
             if (playing === source) {
               playing = null;
               level.current = 0;
+              whileSounding?.(false);
             }
           };
           source.start();
           playing = source;
           level.current = 0.35; // enough for the avatar to stir, not enough to look like speech
+          whileSounding?.(true);
           onSound?.();
         } catch {
           // nothing worth reporting: she simply waits in silence, as before
@@ -120,6 +133,7 @@ export function thinkingSound(voice: VoiceSettings, level: LevelRef, onSound?: (
         }
         playing = null;
         level.current = 0;
+        whileSounding?.(false);
       }
     },
     release() {
