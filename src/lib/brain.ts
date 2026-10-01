@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { UserFacingError } from "./http";
 import { generateStructured } from "./llm";
+import { speechSoFar } from "./partialSpeech";
 import { coachInput, COACH_SYSTEM_PROMPT, quizPrompt, REVIEW_SYSTEM_PROMPT, reviewInput, tutorSystemPrompt } from "./prompts";
-import { readSettings } from "./store";
+import { readMaterials, readSettings } from "./store";
 import type { ChatMessage } from "./structured";
 import {
   CEFR_LEVELS,
@@ -16,13 +17,27 @@ import {
   type ReviewCard,
   type Session,
   type SessionReview,
+  type SpeechSegment,
   type TutorReply,
 } from "./types";
 
 // The tutor's three thinking jobs. Which model does each one is chosen on the Settings page.
 
-// Corrections come before speech so the model notices the mistakes before it phrases its reply.
+/**
+ * Field order here is the order the model writes them in, and the student hears nothing until
+ * "speech" arrives - so speech comes early and everything that isn't needed to speak comes after.
+ *
+ * "corrections" used to be first, so that she noticed the mistakes before phrasing her reply. She
+ * still does, but through "focus": a handful of words naming what went wrong. That keeps the
+ * benefit at a tenth of the cost, because the full corrections - five fields each, with an
+ * explanation - were being written out before the first French word existed. The worst turns in the
+ * history were exactly the ones with the most corrections: nine corrections meant sixteen seconds
+ * of silence. The corrections themselves are unchanged, and nothing acts on them until the
+ * end-of-session review rules on each one anyway.
+ */
 const TutorReplySchema = z.object({
+  focus: z.string(),
+  speech: z.array(z.object({ lang: z.enum(["fr", "en"]), text: z.string() })),
   corrections: z.array(
     z.object({
       original: z.string(),
@@ -32,11 +47,23 @@ const TutorReplySchema = z.object({
       severity: z.enum(["minor", "major"]),
     }),
   ),
-  speech: z.array(z.object({ lang: z.enum(["fr", "en"]), text: z.string() })),
   vocabulary: z.array(z.object({ french: z.string(), english: z.string(), example: z.string() })),
 });
 
 const Level = z.enum(CEFR_LEVELS);
+/**
+ * The review's ruling on each correction the tutor drafted during the session. Nothing reaches
+ * the mistake history until it has a verdict here: see src/app/api/session/end/route.ts.
+ */
+const VerifiedCorrectionSchema = z.object({
+  original: z.string(),
+  corrected: z.string(),
+  category: z.enum(ERROR_CATEGORIES),
+  severity: z.enum(["major", "minor"]),
+  explanation: z.string(),
+  verdict: z.enum(["confirmed", "amended", "wrong"]),
+});
+
 const ReviewSchema = z.object({
   summary: z.string(),
   strengths: z.array(z.string()),
@@ -46,6 +73,7 @@ const ReviewSchema = z.object({
   levels: z.object({ overall: Level, speaking: Level, grammar: Level, vocabulary: Level }),
   nextSessionPlan: z.string(),
   encouragement: z.string(),
+  verifiedCorrections: z.array(VerifiedCorrectionSchema).default([]),
 });
 
 const CoachSchema = z.object({
@@ -78,14 +106,27 @@ function toMessages(session: Session): ChatMessage[] {
   });
 }
 
-export async function generateTutorReply(session: Session, signal?: AbortSignal): Promise<TutorReply> {
+/**
+ * One reply from the tutor. `onSegment` is called with each sentence as she writes it, so the page
+ * can start speaking before the rest of the answer exists; providers that can't stream never call it
+ * and the finished reply is returned just the same.
+ */
+export async function generateTutorReply(
+  session: Session,
+  signal?: AbortSignal,
+  onSegment?: (segment: SpeechSegment) => void,
+): Promise<TutorReply> {
   const { models } = await readSettings();
+  // In the system prompt rather than each turn: it is the same text all session, so it is written to
+  // the cache once and read back at a tenth of the price on every turn after the first.
+  const material = session.materialId ? (await readMaterials()).find((m) => m.id === session.materialId) : undefined;
   const reply = await generateStructured(models.tutor, {
     feature: "tutor",
-    system: tutorSystemPrompt(),
+    system: tutorSystemPrompt(material),
     messages: toMessages(session),
     schema: TutorReplySchema,
     signal,
+    onDelta: onSegment ? speechSoFar(onSegment) : undefined,
   });
   if (!reply.speech.some((s) => s.text.trim())) {
     throw new UserFacingError(

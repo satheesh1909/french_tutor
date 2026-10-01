@@ -11,3 +11,35 @@ __pycache__/
 
 # your personal learning data (transcripts, mistakes, progress)
 data/
+
+# the local lip-sync avatar: a cloned third-party repo, its environment and its model weights
+avatar_server/.venv/
+avatar_server/wav2lip/
+avatar_server/bin/
+avatar_server/out/
+
+# the local voice (Piper): its environment and the voice models it downloads
+piper_server/.venv/
+piper_server/voices/
+
+# the local voice (XTTS): its environment, and the licence you accepted on this computer
+voice_server/.venv/
+voice_server/.licence-accepted
+# voice recordings are yours, and may not be ours to publish
+voice_server/voices/*.wav
+.tutor.pids
+
+# working notes: task specs and backlogs, written for one job and kept on this machine
+FIX-PROMPT.md
+IMPROVEMENTS.md
+PROMPT-PATCHES.md
+
+# portraits you upload through Settings are yours; only the one that ships with the app is tracked
+avatar_server/faces/*
+!avatar_server/faces/charlotte.jpg
+!avatar_server/faces/charlotte.box.json
+
+# generated animations: rebuild them with scripts/architecture-gif.py
+docs/*.gif
+docs/*.mp4
+docs/_frames/

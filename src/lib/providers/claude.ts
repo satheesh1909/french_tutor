@@ -4,13 +4,33 @@ import type { z } from "zod";
 import { UserFacingError } from "../http";
 import type { StructuredRequest } from "../structured";
 import { EFFORTS, nearestEffort, type Effort } from "../types";
+import { claudeKey, claudeWorkspaceId } from "../store";
 import { recordUsage } from "../usage";
 
-// Created lazily so routes that don't need Claude still load when no key is configured.
+// Created lazily so routes that don't need Claude still load when no key is configured, and
+// rebuilt when the key changes (the Settings page can save a new one at any time).
 let client: Anthropic | undefined;
-const claude = () => (client ??= new Anthropic());
+let clientKey: string | undefined;
 
-export const hasClaudeCredentials = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+async function claude(): Promise<Anthropic> {
+  const [key, workspace] = await Promise.all([claudeKey(), claudeWorkspaceId()]);
+  if (!key && !process.env.ANTHROPIC_AUTH_TOKEN) {
+    throw new UserFacingError("No Claude API key yet. Add one on the Settings page, under Connections.", 400);
+  }
+  // The workspace is part of what identifies the caller, so a change to it rebuilds the client
+  // just as a change of key does.
+  const identity = `${key ?? ""}|${workspace ?? ""}`;
+  if (!client || clientKey !== identity) {
+    client = new Anthropic({
+      ...(key ? { apiKey: key } : {}),
+      ...(workspace ? { defaultHeaders: { "anthropic-workspace-id": workspace } } : {}),
+    });
+    clientKey = identity;
+  }
+  return client;
+}
+
+export const hasClaudeCredentials = async () => Boolean((await claudeKey()) || process.env.ANTHROPIC_AUTH_TOKEN);
 
 /**
  * Claude Opus 5 can decline a request; "default" fallbacks re-run a declined request server-side
@@ -46,17 +66,16 @@ function describeModel(m: Anthropic.ModelInfo): ClaudeModelInfo {
 const modelInfoCache = new Map<string, Promise<ClaudeModelInfo | null>>();
 
 function modelInfo(id: string): Promise<ClaudeModelInfo | null> {
-  let info = modelInfoCache.get(id);
-  if (!info) {
-    info = claude()
-      .models.retrieve(id)
-      .then(describeModel)
-      .catch(() => {
-        modelInfoCache.delete(id); // try again next time
-        return null;
-      });
-    modelInfoCache.set(id, info);
-  }
+  const cached = modelInfoCache.get(id);
+  if (cached) return cached;
+  const info = claude()
+    .then((c) => c.models.retrieve(id))
+    .then(describeModel)
+    .catch(() => {
+      modelInfoCache.delete(id); // try again next time
+      return null;
+    });
+  modelInfoCache.set(id, info);
   return info;
 }
 
@@ -70,7 +89,7 @@ export async function claudeStructured<T extends z.ZodType>(req: StructuredReque
   const effort = info ? nearestEffort(req.effort, info.efforts) : req.effort;
 
   // Streaming so a long, high-effort answer can't hit an HTTP timeout.
-  const stream = claude().beta.messages.stream({
+  const stream = (await claude()).beta.messages.stream({
     model: req.model,
     max_tokens: Math.min(64000, info?.maxOutputTokens ?? 64000),
     system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
@@ -85,6 +104,9 @@ export async function claudeStructured<T extends z.ZodType>(req: StructuredReque
     output_config: { ...(effort ? { effort } : {}), format: betaZodOutputFormat(req.schema) },
     ...fallbacks(req.model),
   }, { signal: req.signal });
+  // The answer was always streamed to avoid an HTTP timeout; this hands it on as it arrives, so the
+  // tutor can start speaking her first sentence while she is still writing the rest.
+  if (req.onDelta) stream.on("text", (delta) => req.onDelta!(delta));
   const response = await stream.finalMessage();
 
   const u = response.usage;
@@ -110,7 +132,7 @@ export async function claudeStructured<T extends z.ZodType>(req: StructuredReque
 export async function listClaudeModels(): Promise<ClaudeModelInfo[]> {
   if (!hasClaudeCredentials()) return [];
   const models: ClaudeModelInfo[] = [];
-  for await (const m of claude().models.list({ limit: 100 })) {
+  for await (const m of (await claude()).models.list({ limit: 100 })) {
     const info = describeModel(m);
     modelInfoCache.set(m.id, Promise.resolve(info));
     models.push(info);

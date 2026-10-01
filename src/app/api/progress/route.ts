@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { averageFluency, type FluencyStats } from "@/lib/fluency";
 import { errorResponse } from "@/lib/http";
+import { config } from "@/lib/config";
 import { readAllSessions, readCards, readMistakes, readProfile, summarizeSession } from "@/lib/store";
 import type { ErrorCategory } from "@/lib/types";
 
@@ -28,6 +29,8 @@ export async function GET() {
     return NextResponse.json({
       profile,
       sessions: sessions.map(summarizeSession),
+      // So the page can say which sessions were too short to count, rather than leaving it a mystery.
+      levelThresholds: { words: config.minWordsForLevel, turns: config.minTurnsForLevel },
       categories,
       topMistakes,
       mistakeCount: mistakes.reduce((n, m) => n + m.count, 0),

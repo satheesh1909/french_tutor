@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { checkAnswer, type AnswerResult } from "@/lib/answers";
+import { gradeAnswer, type AnswerCheck, type Slip } from "@/lib/answers";
 import type { Grade } from "@/lib/srs";
 import { CATEGORY_LABELS, type AppSettings, type QuizQuestion, type ReviewCard, type VoiceSettings } from "@/lib/types";
 import { api, errorMessage } from "./api";
@@ -9,11 +9,20 @@ import { formatWhen } from "./format";
 import { QuizPlayer } from "./QuizPlayer";
 import { speak } from "./voice";
 
-const RESULT_TITLES: Record<AnswerResult, string> = {
-  correct: "Correct !",
-  almost: "Almost: check the accents",
-  wrong: "Not quite",
+const RESULT_TITLES: Record<Slip, string> = {
+  none: "Not quite",
+  accents: "Almost - mind the accents",
+  spelling: "Almost - one letter out",
 };
+
+/** The expected answer with whatever was missed marked, so the eye goes straight to it. */
+function Answer({ check }: { check: AnswerCheck }) {
+  return (
+    <>
+      {check.marks.map((m, i) => (m.changed ? <mark key={i} className="miss">{m.text}</mark> : <span key={i}>{m.text}</span>))}
+    </>
+  );
+}
 
 export function PracticeApp() {
   const [tab, setTab] = useState<"review" | "quiz">("review");
@@ -71,7 +80,7 @@ function ReviewDeck({ listen }: { listen: (text: string) => void }) {
   const [deck, setDeck] = useState<DueCards | null>(null);
   const [queue, setQueue] = useState<ReviewCard[]>([]);
   const [answer, setAnswer] = useState("");
-  const [result, setResult] = useState<AnswerResult | null>(null);
+  const [result, setResult] = useState<AnswerCheck | null>(null);
   const [reviewed, setReviewed] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +99,7 @@ function ReviewDeck({ listen }: { listen: (text: string) => void }) {
   const card = queue[0];
 
   const check = () => {
-    if (card && answer.trim()) setResult(checkAnswer(answer, [card.answer]));
+    if (card && answer.trim()) setResult(gradeAnswer(answer, [card.answer, ...(card.accepts ?? [])]));
   };
 
   const grade = async (g: Grade) => {
@@ -131,7 +140,7 @@ function ReviewDeck({ listen }: { listen: (text: string) => void }) {
     );
   }
 
-  const suggested: Grade = result === "wrong" ? "again" : result === "almost" ? "hard" : "good";
+  const suggested: Grade = result?.result === "wrong" ? "again" : result?.result === "almost" ? "hard" : "good";
 
   return (
     <div className="panel flash" key={`${card.id}-${card.lastReviewed}`}>
@@ -162,16 +171,18 @@ function ReviewDeck({ listen }: { listen: (text: string) => void }) {
           <button className="btn btn--primary" onClick={check} disabled={!answer.trim()}>
             Check
           </button>
-          <button className="btn btn--ghost" onClick={() => setResult("wrong")}>
+          <button className="btn btn--ghost" onClick={() => setResult(gradeAnswer("", [card.answer, ...(card.accepts ?? [])]))}>
             Show answer
           </button>
         </div>
       ) : (
-        <div className={`result result--${result}`}>
-          <p className="result__title">{RESULT_TITLES[result]}</p>
+        <div className={`result result--${result.result}`}>
+          <p className="result__title">{result.result === "correct" ? "Correct !" : RESULT_TITLES[result.slip]}</p>
           <p className="result__answer" lang="fr">
-            {card.answer}
-            <button className="link" onClick={() => listen(card.answer)}>
+            <span>
+              <Answer check={result} />
+            </span>
+            <button className="link" onClick={() => listen(result.matched)}>
               Listen
             </button>
           </p>

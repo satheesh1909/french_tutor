@@ -16,6 +16,7 @@ import {
   type MistakeRecord,
   type QuizQuestion,
   type SessionSummary,
+  type TurnTiming,
   type VoiceSettings,
 } from "@/lib/types";
 import { PACE_GUIDE, type FluencyAverage } from "@/lib/fluency";
@@ -31,7 +32,17 @@ interface ProgressData {
   topMistakes: MistakeRecord[];
   mistakeCount: number;
   cards: { total: number; due: number; mature: number };
+  levelThresholds: { words: number; turns: number };
   speaking: Record<"today" | "week" | "previousWeek" | "month" | "allTime", FluencyAverage | null>;
+}
+
+/**
+ * A session too small to be evidence. The same rule runs on the server when the profile is
+ * written (see src/app/api/session/end/route.ts); this is only so the null result is visible
+ * instead of looking like nothing happened.
+ */
+function isTooShort(s: SessionSummary, limits: { words: number; turns: number }): boolean {
+  return s.studentWords < limits.words || s.turnCount < limits.turns;
 }
 
 export function ProgressApp() {
@@ -101,6 +112,8 @@ export function ProgressApp() {
 
       <SpeakingPanel speaking={data.speaking} />
 
+      <ResponsePanel />
+
       <section className="panel">
         <h2 className="section-title">Mistakes &amp; review</h2>
         <div className="stats">
@@ -151,6 +164,7 @@ export function ProgressApp() {
           <ul className="sessions">
             {data.sessions.map((s) => {
               const scenario = ROLEPLAY_SCENARIOS.find((x) => x.id === s.scenarioId);
+              const tooShort = (x: SessionSummary) => isTooShort(x, data.levelThresholds);
               return (
                 <li key={s.id}>
                   <details>
@@ -163,11 +177,18 @@ export function ProgressApp() {
                       <span className="muted small">
                         {s.turnCount} turns · {s.correctionCount} corrections
                         {s.fluency ? ` · ${s.fluency.wpm} wpm` : ""}
-                        {s.review ? ` · ${s.review.levels.overall}` : ""}
+                        {s.review && !tooShort(s) ? ` · ${s.review.levels.overall}` : ""}
                       </span>
                     </summary>
                     {s.review ? (
                       <div className="session-review">
+                        {tooShort(s) && (
+                          <p className="small muted">
+                            Too short to judge your level: {s.studentWords} word{s.studentWords === 1 ? "" : "s"} over {s.turnCount} turn
+                            {s.turnCount === 1 ? "" : "s"}, where {data.levelThresholds.words} words and {data.levelThresholds.turns} turns are
+                            needed. Your level was left as it was; the advice below still stands.
+                          </p>
+                        )}
                         <p>{s.review.summary}</p>
                         {s.review.fluencyNote && <p className="small">{s.review.fluencyNote}</p>}
                         <ul className="bullets">
@@ -398,6 +419,120 @@ function Stat({ label, value, detail }: { label: string; value: number | string;
   );
 }
 
+/** The middle value, which a single very slow turn cannot drag around the way a mean can. */
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+
+/**
+ * How long she takes to answer, and where that time goes.
+ *
+ * The wait used to be argued about from memory, which is no way to tell a slow transcription from a
+ * slow model - they feel identical. Each stage is timed in the browser from the moment the student
+ * stops talking, and shown here so a change to the pipeline can be judged instead of hoped about.
+ */
+function ResponsePanel() {
+  const [timings, setTimings] = useState<TurnTiming[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api
+      .get<{ timings: TurnTiming[] }>("/api/timing")
+      .then((d) => setTimings(d.timings))
+      .catch(() => setFailed(true));
+  }, []);
+
+  if (failed) return null; // a missing read-out is not worth an error on this page
+  if (!timings) return null;
+
+  const recent = timings.slice(-60);
+  if (recent.length === 0) {
+    return (
+      <section className="panel">
+        <h2 className="section-title">How quickly she answers</h2>
+        <p className="muted">
+          Nothing timed yet. Speak a few answers in a session and each turn is measured here, from the moment you stop talking to the moment you hear
+          her.
+        </p>
+      </section>
+    );
+  }
+
+  // "Started early" means transcription had already begun during the pause. Both kinds are kept so
+  // the two can be compared rather than taken on trust.
+  const overlapped = recent.filter((t) => t.early);
+  const plain = recent.filter((t) => !t.early);
+  const stages: [string, (t: TurnTiming) => number, string][] = [
+    ["Waiting to be sure you'd finished", (t) => t.endpointMs, "the pause at the end of your turn"],
+    ["Transcribing what you said", (t) => t.transcribeMs, "shorter when it began during your pause"],
+    ["Her writing the first sentence", (t) => t.brainMs, "the model; little of this can be removed"],
+    ["Turning it into her voice", (t) => t.voiceMs, "the voice server"],
+  ];
+  const wordsNow = median(recent.map((t) => t.wordsMs));
+  const soundNow = median(recent.map((t) => t.firstSoundMs));
+  const restarted = recent.filter((t) => t.restarted).length;
+
+  return (
+    <section className="panel">
+      <h2 className="section-title">How quickly she answers</h2>
+      <p className="small">
+        Measured from the moment you stop talking, over your last {recent.length} spoken {recent.length === 1 ? "turn" : "turns"}. Middle values, not
+        averages, so one slow turn doesn&rsquo;t distort them.
+      </p>
+      <div className="stats">
+        <Stat label="before you hear anything" value={seconds(soundNow)} detail={soundNow < wordsNow ? "a thinking noise fills this" : undefined} />
+        <Stat label="before her first word" value={seconds(wordsNow)} detail="the one that decides whether this feels like a person" />
+        <Stat label="turns measured" value={recent.length} detail={restarted ? `${restarted} restarted because you carried on` : undefined} />
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Where the time goes</th>
+            <th>Started early</th>
+            <th>Started after</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map(([label, of, note]) => (
+            <tr key={label}>
+              <td>
+                {label}
+                <br />
+                <span className="small muted">{note}</span>
+              </td>
+              <td>{overlapped.length ? seconds(median(overlapped.map(of))) : "–"}</td>
+              <td>{plain.length ? seconds(median(plain.map(of))) : "–"}</td>
+            </tr>
+          ))}
+          <tr>
+            <td>
+              <strong>Her first word</strong>
+            </td>
+            <td>
+              <strong>{overlapped.length ? seconds(median(overlapped.map((t) => t.wordsMs))) : "–"}</strong>
+            </td>
+            <td>
+              <strong>{plain.length ? seconds(median(plain.map((t) => t.wordsMs))) : "–"}</strong>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="small muted">
+        {overlapped.length && plain.length
+          ? "Both columns have turns in them, so the comparison is a real one. The switches are in Settings, under “Keeping up with you”."
+          : overlapped.length
+            ? "Every turn here started early. To compare, turn that off in Settings for a few turns."
+            : "No turn here started early yet. Turn that on in Settings to see the difference."}
+      </p>
+    </section>
+  );
+}
+
 function SpeakingPanel({ speaking }: { speaking: ProgressData["speaking"] }) {
   const { week, previousWeek, month, allTime, today } = speaking;
   const change = week && previousWeek ? week.wpm - previousWeek.wpm : null;
@@ -509,6 +644,24 @@ function ProfileForm({ profile, onSaved }: { profile: LearnerProfile; onSaved: (
           </select>
         </label>
       </div>
+      <div className="field-row">
+        <label className="field">
+          <span>Where you live</span>
+          <input className="input" value={form.city ?? ""} onChange={(e) => set("city", e.target.value)} placeholder="e.g. Dunkerque" />
+        </label>
+        <label className="field">
+          <span>Where you work</span>
+          <input className="input" value={form.employer ?? ""} onChange={(e) => set("employer", e.target.value)} placeholder="Company or organisation" />
+        </label>
+        <label className="field">
+          <span>Your job</span>
+          <input className="input" value={form.role ?? ""} onChange={(e) => set("role", e.target.value)} placeholder="e.g. project manager" />
+        </label>
+      </div>
+      <p className="small muted">
+        These three are optional, and they exist to stop the end-of-session review inventing details about you: without them it has been known to
+        write a plan around a city you&apos;ve never lived in.
+      </p>
       <label className="field">
         <span>Why you&apos;re learning French</span>
         <textarea

@@ -1,90 +1,160 @@
 "use client";
 
 import type { Lang, SpeechSegment, VoiceSettings } from "@/lib/types";
+import { speakInOrder, withFallback, type SpeechPlayer } from "./speechQueue";
 
 /** Current loudness (0–1) of whoever is talking; the avatar reads it every frame. */
-export type LevelRef = { current: number };
+export type LevelRef = {
+  current: number;
+  /** How far the mouth should open (0-1). Set while the tutor speaks, for lip-sync. */
+  open?: number;
+  /** Mouth shape: 0 is round like "ooh", 1 is wide like "eee". */
+  wide?: number;
+};
 
+/** Loudness of a block of samples, 0-1, scaled so ordinary speech fills the meter. */
 export function rms(samples: Uint8Array): number {
+  return Math.min(1, rawRms(samples) * 4);
+}
+
+function rawRms(samples: Uint8Array): number {
   let sum = 0;
   for (const v of samples) {
     const x = (v - 128) / 128;
     sum += x * x;
   }
-  return Math.min(1, Math.sqrt(sum / samples.length) * 4);
+  return Math.sqrt(sum / samples.length);
 }
 
-/** Speaks the tutor's reply. Falls back to the browser's built-in voices if Gemini is unavailable. */
+/**
+ * Speaks the tutor's reply, falling back to the browser's own voices if the chosen one fails.
+ * Segments are made one at a time, so the first is heard while the rest are still being synthesised.
+ */
 export async function speak(segments: SpeechSegment[], voice: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
   const parts = segments.filter((s) => s.text.trim());
   if (parts.length === 0 || signal.aborted) return;
-  if (voice.provider === "gemini") {
-    try {
-      await speakWithGemini(parts, voice, level, signal);
-      return;
-    } catch (err) {
-      if (signal.aborted) return;
-      console.warn("Gemini voice failed; using the browser voice instead.", err);
-    }
-  }
-  await speakWithBrowser(parts, voice, level, signal);
+  const queue = speakInOrder(voicePlayer(voice, level), signal);
+  for (const part of parts) queue.push(part);
+  queue.close();
+  await queue.finished();
 }
 
-async function speakWithGemini(segments: SpeechSegment[], voice: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
-  const res = await fetch("/api/tts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ segments, voice: voice.geminiVoice, model: voice.geminiModel }),
-    signal,
-  });
-  if (!res.ok) throw new Error(`Voice request failed (${res.status})`);
-  const audio = await res.arrayBuffer();
-  if (signal.aborted) return;
+/** Her voice, with the browser's own behind it unless that is already what was chosen. */
+export function voicePlayer(voice: VoiceSettings, level: LevelRef): SpeechPlayer {
+  if (voice.provider === "browser") return browserVoicePlayer(voice, level);
+  return withFallback(
+    serverVoicePlayer(voice, level),
+    browserVoicePlayer(voice, level),
+    `The ${voice.provider} voice failed; using the browser voice instead.`,
+  );
+}
 
-  const ctx = new AudioContext();
-  let raf = 0;
-  let safety: ReturnType<typeof setTimeout> | undefined;
-  try {
+/**
+ * Her voice made on the server - Gemini, or one of the local voice servers - and played here. One
+ * audio context serves the whole reply: opening one per sentence is wasteful and can click.
+ */
+export function serverVoicePlayer(voice: VoiceSettings, level: LevelRef): SpeechPlayer {
+  let ctx: AudioContext | null = null;
+
+  const context = async (): Promise<AudioContext> => {
+    if (!ctx) ctx = new AudioContext();
     // Browsers may hold audio until the page has been interacted with; don't wait forever for that.
     if (ctx.state !== "running") {
       await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 1500))]);
       if ((ctx.state as AudioContextState) !== "running") throw new Error("Audio playback is blocked by the browser.");
     }
-    const buffer = await ctx.decodeAudioData(audio);
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 512;
-    source.connect(analyser);
-    analyser.connect(ctx.destination);
-    const samples = new Uint8Array(analyser.fftSize);
-    const meter = () => {
-      analyser.getByteTimeDomainData(samples);
-      level.current = rms(samples);
-      raf = requestAnimationFrame(meter);
+    return ctx;
+  };
+
+  return {
+    async render(segment, signal) {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          segments: [segment],
+          provider: voice.provider,
+          voice: voice.geminiVoice,
+          model: voice.geminiModel,
+          speaker: voice.xttsSpeaker,
+          voices: { fr: voice.piperVoiceFr, en: voice.piperVoiceEn },
+          speeds: { fr: voice.piperSpeedFr, en: voice.piperSpeedEn },
+        }),
+        signal,
+      });
+      if (!res.ok) throw new Error(`Voice request failed (${res.status})`);
+      const bytes = await res.arrayBuffer();
+      const audio = await (await context()).decodeAudioData(bytes);
+      return {
+        play: () => playBuffer(ctx!, audio, level, signal),
+        release: () => undefined,
+      };
+    },
+    release() {
+      void ctx?.close().catch(() => undefined);
+      ctx = null;
+    },
+  };
+}
+
+/** Plays one decoded clip, driving the mouth and the rings from what is actually being heard. */
+function playBuffer(ctx: AudioContext, buffer: AudioBuffer, level: LevelRef, signal: AbortSignal): Promise<void> {
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  analyser.connect(ctx.destination);
+  const samples = new Uint8Array(analyser.fftSize);
+  const spectrum = new Uint8Array(analyser.frequencyBinCount);
+  // Which bins carry the vowel's body, and which carry the brightness that tells "eee" from "ooh".
+  const binHz = ctx.sampleRate / analyser.fftSize;
+  const band = (from: number, to: number) => {
+    let sum = 0;
+    for (let i = Math.max(1, Math.round(from / binHz)); i < Math.min(spectrum.length, Math.round(to / binHz)); i++) sum += spectrum[i];
+    return sum;
+  };
+  let raf = 0;
+  let safety: ReturnType<typeof setTimeout> | undefined;
+  const meter = () => {
+    analyser.getByteTimeDomainData(samples);
+    analyser.getByteFrequencyData(spectrum);
+    const raw = rawRms(samples);
+    const low = band(120, 900);
+    const high = band(1600, 4200);
+    const brightness = high / (low + high + 1);
+    level.current = Math.min(1, raw * 4);
+    // Lower gain than the meter: a mouth that is wide open on every syllable looks like a puppet.
+    level.open = Math.min(1, raw * 2.4);
+    level.wide = Math.min(1, Math.max(0, (brightness - 0.25) / 0.35));
+    raf = requestAnimationFrame(meter);
+  };
+
+  return new Promise<void>((resolve) => {
+    const finish = () => {
+      signal.removeEventListener("abort", onAbort);
+      clearTimeout(safety);
+      cancelAnimationFrame(raf);
+      level.current = 0;
+      level.open = 0;
+      resolve();
     };
-    await new Promise<void>((resolve) => {
-      const finish = () => {
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      };
-      const onAbort = () => {
+    const onAbort = () => {
+      try {
         source.stop();
-        finish();
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      source.onended = finish;
-      // If the audio device stalls, "ended" may never fire; don't leave the tutor stuck on "Speaking".
-      safety = setTimeout(finish, (buffer.duration + 2) * 1000);
-      source.start();
-      meter();
-    });
-  } finally {
-    clearTimeout(safety);
-    cancelAnimationFrame(raf);
-    level.current = 0;
-    await ctx.close();
-  }
+      } catch {
+        // already finished
+      }
+      finish();
+    };
+    if (signal.aborted) return finish();
+    signal.addEventListener("abort", onAbort, { once: true });
+    source.onended = finish;
+    // If the audio device stalls, "ended" may never fire; don't leave the tutor stuck on "Speaking".
+    safety = setTimeout(finish, (buffer.duration + 2) * 1000);
+    source.start();
+    meter();
+  });
 }
 
 // Windows/Edge voices first (the "Online (Natural)" ones sound good), then common macOS/Chrome ones.
@@ -121,43 +191,69 @@ export function loadVoices(synth: SpeechSynthesis): Promise<SpeechSynthesisVoice
   });
 }
 
-async function speakWithBrowser(segments: SpeechSegment[], settings: VoiceSettings, level: LevelRef, signal: AbortSignal): Promise<void> {
-  if (!("speechSynthesis" in window)) return;
+/**
+ * The browser's own voices. There is nothing to prepare in advance here - speechSynthesis has no way
+ * to make a clip without also playing it - so rendering only picks the voice, and the work happens at
+ * play time. It is the fallback, so a plain sequential voice is the right trade.
+ */
+export function browserVoicePlayer(settings: VoiceSettings, level: LevelRef): SpeechPlayer {
+  let loading: Promise<SpeechSynthesisVoice[]> | null = null;
+  const available = () => {
+    if (!loading) loading = loadVoices(window.speechSynthesis);
+    return loading;
+  };
+
+  return {
+    async render(segment, signal) {
+      if (!("speechSynthesis" in window)) return { play: async () => undefined, release: () => undefined };
+      const voices = await available();
+      const chosen = pickVoice(voices, segment.lang, segment.lang === "fr" ? settings.browserVoiceFr : settings.browserVoiceEn);
+      return {
+        play: () => speakUtterance(segment, chosen, level, signal),
+        release: () => undefined,
+      };
+    },
+    release: () => undefined,
+  };
+}
+
+function speakUtterance(segment: SpeechSegment, voice: SpeechSynthesisVoice | undefined, level: LevelRef, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
   const synth = window.speechSynthesis;
-  const voices = await loadVoices(synth);
   // Browser speech exposes no audio stream, so animate the avatar with a gentle pulse instead.
   const pulse = setInterval(() => {
     level.current = 0.2 + Math.random() * 0.45;
+    level.open = level.current;
+    level.wide = 0.25 + Math.random() * 0.5;
   }, 120);
-  try {
-    for (const segment of segments) {
-      if (signal.aborted) break;
-      await new Promise<void>((resolve) => {
-        const utterance = new SpeechSynthesisUtterance(segment.text);
-        utterance.lang = segment.lang === "fr" ? "fr-FR" : "en-GB";
-        const voice = pickVoice(voices, segment.lang, segment.lang === "fr" ? settings.browserVoiceFr : settings.browserVoiceEn);
-        if (voice) utterance.voice = voice;
-        utterance.rate = segment.lang === "fr" ? 0.92 : 1;
-        // Speech synthesis can silently never start (e.g. before any page interaction); cap the wait.
-        const safety = setTimeout(() => done(), 3000 + segment.text.length * 120);
-        const cancel = () => {
-          clearTimeout(safety);
-          synth.cancel();
-          resolve();
-        };
-        const done = () => {
-          clearTimeout(safety);
-          signal.removeEventListener("abort", cancel);
-          resolve();
-        };
-        utterance.onend = done;
-        utterance.onerror = done;
-        signal.addEventListener("abort", cancel, { once: true });
-        synth.speak(utterance);
-      });
-    }
-  } finally {
-    clearInterval(pulse);
-    level.current = 0;
-  }
+
+  return new Promise<void>((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(segment.text);
+    utterance.lang = segment.lang === "fr" ? "fr-FR" : "en-GB";
+    if (voice) utterance.voice = voice;
+    utterance.rate = segment.lang === "fr" ? 0.92 : 1;
+    const stop = () => {
+      clearInterval(pulse);
+      level.current = 0;
+      level.open = 0;
+    };
+    // Speech synthesis can silently never start (e.g. before any page interaction); cap the wait.
+    const safety = setTimeout(() => done(), 3000 + segment.text.length * 120);
+    const cancel = () => {
+      clearTimeout(safety);
+      synth.cancel();
+      stop();
+      resolve();
+    };
+    const done = () => {
+      clearTimeout(safety);
+      signal.removeEventListener("abort", cancel);
+      stop();
+      resolve();
+    };
+    utterance.onend = done;
+    utterance.onerror = done;
+    signal.addEventListener("abort", cancel, { once: true });
+    synth.speak(utterance);
+  });
 }

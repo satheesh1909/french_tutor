@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>French tutor — how it works</title>
+<style>
+:root{
+  --bg:#0f1115; --panel:#161922; --panel2:#1d2130; --line:#2a2f3e;
+  --text:#e8eaf0; --muted:#949bb0; --dim:#666e85;
+  --browser:#8b83e8; --route:#4a9ae8; --domain:#2bb98c; --engine:#e8744a; --data:#8b8f9e;
+  --live:#f0b429; --ok:#2bb98c;
+}
+:root[data-theme="light"]{
+  --bg:#f6f6f3; --panel:#ffffff; --panel2:#f0f0ec; --line:#dcdcd4;
+  --text:#1c1c1a; --muted:#5f5e5a; --dim:#8b8a84;
+  --browser:#534ab7; --route:#185fa5; --domain:#0f6e56; --engine:#993c1d; --data:#5f5e5a;
+  --live:#a8600a; --ok:#0f6e56;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--text);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+header{padding:20px 24px 12px;display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+header h1{margin:0;font-size:20px;font-weight:500;letter-spacing:-.01em}
+header p{margin:4px 0 0;color:var(--muted);font-size:13px;max-width:70ch}
+.spacer{flex:1}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+.btn{
+  border:1px solid var(--line); background:var(--panel); color:var(--text);
+  padding:6px 12px; border-radius:7px; font-size:13px; transition:background .12s,border-color .12s;
+}
+.btn:hover{background:var(--panel2);border-color:var(--dim)}
+.btn:disabled{opacity:.4;cursor:default}
+.btn--go{background:var(--live);border-color:var(--live);color:#1a1405;font-weight:500}
+:root[data-theme="light"] .btn--go{color:#fff}
+.btn--go:hover{filter:brightness(1.08);background:var(--live)}
+
+nav{display:flex;gap:6px;padding:0 24px 12px;flex-wrap:wrap}
+.tab{
+  border:1px solid var(--line);background:var(--panel);padding:7px 13px;border-radius:999px;
+  font-size:13px;color:var(--muted);display:flex;align-items:center;gap:7px;
+}
+.tab:hover{color:var(--text)}
+.tab[aria-selected="true"]{background:var(--panel2);border-color:var(--dim);color:var(--text)}
+.tab .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.75}
+
+.controls{display:flex;align-items:center;gap:10px;padding:0 24px 14px;flex-wrap:wrap}
+.progress{flex:1;min-width:160px;height:4px;background:var(--panel2);border-radius:3px;overflow:hidden}
+.progress i{display:block;height:100%;width:0;background:var(--live);transition:width .18s linear}
+.count{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;min-width:74px;text-align:right}
+label.speed{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+input[type=range]{width:96px;accent-color:var(--live)}
+
+main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;padding:0 24px 24px;align-items:start}
+@media (max-width:1100px){main{grid-template-columns:minmax(0,1fr)}}
+.stage{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;overflow:hidden}
+svg{width:100%;height:auto;display:block}
+
+aside{display:flex;flex-direction:column;gap:16px;position:sticky;top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.card h2{margin:0;padding:11px 14px;font-size:12px;font-weight:500;color:var(--muted);
+  text-transform:none;border-bottom:1px solid var(--line);letter-spacing:.02em}
+#log{list-style:none;margin:0;padding:6px;max-height:390px;overflow-y:auto}
+#log li{
+  padding:7px 9px;border-radius:7px;font-size:12.5px;color:var(--dim);cursor:pointer;
+  display:flex;gap:8px;line-height:1.45;transition:background .12s,color .12s;
+}
+#log li:hover{background:var(--panel2);color:var(--muted)}
+#log li b{color:var(--muted);font-weight:400;flex:0 0 18px;font-variant-numeric:tabular-nums}
+#log li.done{color:var(--muted)}
+#log li.now{background:var(--panel2);color:var(--text)}
+#log li.now b{color:var(--live)}
+#log .hop{color:var(--muted);font-size:11.5px}
+#log li.now .hop{color:var(--live)}
+.detail{padding:14px}
+.detail .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+  border:1px solid currentColor;opacity:.9;margin-bottom:8px}
+.detail h3{margin:0 0 2px;font-size:15px;font-weight:500}
+.detail code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted)}
+.detail p{margin:9px 0 0;font-size:13px;color:var(--muted)}
+.hint{color:var(--dim);font-size:12.5px;padding:14px}
+
+footer{padding:0 24px 40px;color:var(--dim);font-size:12.5px;max-width:110ch}
+footer .legend{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px}
+footer .legend span{display:flex;align-items:center;gap:6px;color:var(--muted)}
+footer .swatch{width:10px;height:10px;border-radius:3px}
+footer p{margin:6px 0}
+
+.node rect{transition:opacity .25s,filter .25s}
+.node text{transition:opacity .25s}
+.node{cursor:pointer}
+.node.off{opacity:.16}
+.node.on .body{filter:brightness(1.25)}
+.node.live .body{stroke-width:2}
+.pulse{opacity:0;transform-origin:center}
+.node.live .pulse{animation:pulse 1.15s ease-out infinite}
+@keyframes pulse{0%{opacity:.5;transform:scale(1)}100%{opacity:0;transform:scale(1.055)}}
+.colhead{fill:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.band{fill:none;stroke:var(--line);stroke-dasharray:3 5}
+.edge{fill:none;stroke-linecap:round}
+.edge.past{stroke:var(--dim);stroke-width:1.4;opacity:.5}
+.edge.live{stroke:var(--live);stroke-width:2.4}
+.packet{fill:var(--live)}
+.packet-halo{fill:var(--live);opacity:.22}
+.elabel{fill:var(--live);font-size:11.5px;paint-order:stroke;stroke:var(--panel);stroke-width:4px;stroke-linejoin:round}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>French tutor — how it works</h1>
+    <p>Every component, and what actually moves between them. Pick a flow and press play; click any box to read what it does.</p>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn" id="theme">Light</button>
+</header>
+
+<nav id="tabs" role="tablist"></nav>
+
+<div class="controls">
+  <button class="btn btn--go" id="play">Play</button>
+  <button class="btn" id="prev">Back</button>
+  <button class="btn" id="next">Step</button>
+  <button class="btn" id="restart">Restart</button>
+  <div class="progress"><i id="bar"></i></div>
+  <span class="count" id="count">0 / 0</span>
+  <label class="speed">Speed <input type="range" id="speed" min="0.4" max="3" step="0.2" value="1"></label>
+</div>
+
+<main>
+  <div class="stage">
+    <svg id="map" viewBox="0 0 1400 880" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Animated architecture diagram of the French tutor">
+      <g id="bands"></g>
+      <g id="heads"></g>
+      <g id="edges"></g>
+      <g id="nodes"></g>
+      <g id="packets"></g>
+    </svg>
+  </div>
+  <aside>
+    <div class="card">
+      <h2 id="logtitle">Steps</h2>
+      <ol id="log"></ol>
+    </div>
+    <div class="card">
+      <h2>Component</h2>
+      <div id="detail" class="hint">Click any box in the diagram.</div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--browser)"></i>Browser</span>
+    <span><i class="swatch" style="background:var(--route)"></i>API route</span>
+    <span><i class="swatch" style="background:var(--domain)"></i>Domain module</span>
+    <span><i class="swatch" style="background:var(--engine)"></i>Model or local server</span>
+    <span><i class="swatch" style="background:var(--data)"></i>File on disk</span>
+  </div>
+  <p>Everything except Anthropic and Google runs on this machine. The four ports are local servers you start yourself; the five providers are chosen per job on the Settings page.</p>
+  <p>Routes not drawn, because they only read and write the same files: <code>/api/profile</code>, <code>/api/progress</code>, <code>/api/usage</code>, <code>/api/session</code>.</p>
+</footer>
+
+<script>
+(function(){
+"use strict";
+
+var COLS = [
+  {x:40,   label:"Browser",       kind:"browser"},
+  {x:320,  label:"API routes",    kind:"route"},
+  {x:600,  label:"Domain · src/lib", kind:"domain"},
+  {x:880,  label:"Models & servers", kind:"engine"},
+  {x:1160, label:"data/",         kind:"data"}
+];
+var W = 200, H = 56, PITCH = 74, TOP = 112;
+
+var NODES = {
+  mic:          {c:0,r:0, t:"Microphone",      s:"hands-free listening", f:"handsFree.ts", d:"Keeps the mic open and works out when you are speaking by comparing loudness against the room. A long enough silence ends the turn and sends it."},
+  tutorPage:    {c:0,r:1, t:"Tutor page",      s:"the conversation",     f:"TutorApp.tsx", d:"Owns the whole conversation state machine: listening, barge-in, turns that supersede an earlier one, the avatar stage and the voice picker. The largest file in the app."},
+  player:       {c:0,r:2, t:"Audio + avatar",  s:"she speaks",           f:"photoAvatar.ts / Avatar3D.tsx", d:"Plays what comes back. In photo mode that is one mp4 with the audio already inside it. In 3D mode a WAV drives a sculpted head, with the jaw following loudness and the lip shape following the balance of low to high frequencies."},
+  practicePage: {c:0,r:3, t:"Practice page",   s:"flashcards & quizzes", f:"PracticeApp.tsx", d:"Drills the cards that are due, and can ask for a written quiz built from your own mistakes."},
+  progressPage: {c:0,r:4, t:"Progress page",   s:"level & coach",        f:"ProgressApp.tsx", d:"Shows your CEFR estimates and session history, and hosts a chat with a coach that answers only from your own evidence."},
+  settingsPage: {c:0,r:5, t:"Settings page",   s:"models, voice, face",  f:"SettingsApp.tsx", d:"Picks a provider and model for each of the four thinking jobs independently, the voice, the avatar and the photo. Keys are saved server-side and never sent back to the browser."},
+
+  apiTranscribe:{c:1,r:0, t:"/api/transcribe", s:"speech to text",       f:"api/transcribe/route.ts", d:"Takes a WAV and returns what you said plus your speaking speed. In Gemini mode it runs Gemini and Whisper at the same time, so word timings cost no extra latency."},
+  apiTutor:     {c:1,r:1, t:"/api/tutor",      s:"one exchange",         f:"api/tutor/route.ts", d:"The main loop. Recalls relevant past mistakes, asks the tutor model for a reply, saves both turns. Deliberately does NOT save corrections."},
+  apiEnd:       {c:1,r:2, t:"/api/session/end",s:"the review gate",      f:"api/session/end/route.ts", d:"The only way a correction ever reaches your mistake history. A second model pass rules on each one first, and the level only moves if you produced 150 words over at least 4 turns."},
+  apiTts:       {c:1,r:3, t:"/api/tts",        s:"her voice as a WAV",   f:"api/tts/route.ts", d:"Used in 3D and browser-avatar mode, and by Settings to preview a voice before you save it. In photo mode /api/avatar is used instead, because the video carries the audio."},
+  apiAvatar:    {c:1,r:4, t:"/api/avatar",     s:"voice + moving face",  f:"api/avatar/route.ts", d:"Speech and lip-sync in one round trip: the chosen voice makes the audio, the local server animates the photo, the browser gets one mp4. Both halves are cached together."},
+  apiFace:      {c:1,r:5, t:"/api/avatar/face",s:"her portrait",         f:"api/avatar/face/route.ts", d:"Serves the still photo, and takes a new one. An uploaded photo is handed to the lip-sync server, which is the only thing that can find a face in it — so a photo with no usable face is refused rather than saved."},
+  apiPractice:  {c:1,r:6, t:"/api/practice",   s:"due cards, grading",   f:"api/practice/route.ts", d:"Returns the cards due now, and records how well you remembered one so it can be scheduled again."},
+  apiQuiz:      {c:1,r:7, t:"/api/quiz",       s:"written questions",    f:"api/quiz/route.ts", d:"Builds a quiz from your mistake history and the vocabulary you have met. Questions that fail validation are dropped rather than shown."},
+  apiCoach:     {c:1,r:8, t:"/api/coach",      s:"questions about you",  f:"api/coach/route.ts", d:"Answers questions about your own progress. Everything it knows is in one evidence block, sent with the first question so a long chat keeps only one copy."},
+  apiSettings:  {c:1,r:9, t:"/api/settings",   s:"+ /api/health",        f:"api/settings/route.ts", d:"Saves your choices and reports which services are reachable, so the UI can say what is missing instead of failing mysteriously."},
+
+  speech:       {c:2,r:0, t:"speech.ts",       s:"picks the voice",      f:"lib/providers/speech.ts", d:"One dispatch point for her voice. The routes never know which engine is speaking, which is what lets the cache tell one voice's clips from another's."},
+  brain:        {c:2,r:1, t:"brain.ts",        s:"prompts + zod schemas",f:"lib/brain.ts", d:"The four thinking jobs — tutor, review, quiz, coach — each with a schema the model must fill. Corrections are first in the tutor schema on purpose, so it notices your mistakes before it phrases its answer."},
+  learner:      {c:2,r:2, t:"learner.ts",      s:"mistake memory",       f:"lib/learner.ts", d:"Merges repeats of one mistake by embedding similarity rather than exact text, and recalls past errors that resemble what you just said."},
+  srs:          {c:2,r:3, t:"srs.ts",          s:"SM-2 scheduling",      f:"lib/srs.ts", d:"Spaced repetition, the scheme Anki grew from. Cards you get right come back at growing intervals; cards you miss come back in ten minutes."},
+  ttsCache:     {c:2,r:4, t:"ttsCache.ts",     s:"clips kept on disk",   f:"lib/ttsCache.ts", d:"Every rendered clip and video is kept under a hash of the words and the voice. She repeats herself constantly, so saying the same thing twice costs nothing."},
+  store:        {c:2,r:5, t:"store.ts",        s:"locked JSON writes",   f:"lib/store.ts", d:"All persistence. Serialises read-modify-write so concurrent requests cannot clobber each other, flushes to disk before swapping a file in, and quarantines a file it cannot parse instead of crashing."},
+  recLib:       {c:2,r:6, t:"recordings.ts",   s:"keeps the last 20",    f:"lib/recordings.ts", d:"Keeps recent recordings with what was transcribed from each, so a turn that came back wrong can be replayed through another model instead of guessed at."},
+
+  whisper:      {c:3,r:0, t:"Whisper :8765",   s:"local, on the GPU",    f:"whisper_server/server.py", d:"faster-whisper with word-level timings. It scores every language, then discards everything that is not French or English before choosing — without that it once transcribed French into Persian, phonetically."},
+  claude:       {c:3,r:1, t:"Anthropic",       s:"tutor · review · coach",f:"lib/providers/claude.ts", d:"The default for the tutor, the end-of-session review and the coach. The review runs at high effort because it is the gate that decides what enters your deck."},
+  gemini:       {c:3,r:2, t:"Google Gemini",   s:"quiz · speech · voice",f:"lib/providers/gemini.ts", d:"Can do any of the four jobs, plus transcription and text-to-speech. Its free speech tier is a hundred requests a day, which is what the clip cache exists to stretch."},
+  ollama:       {c:3,r:3, t:"Ollama :11434",   s:"embeddings, local",    f:"lib/providers/ollama.ts", d:"nomic-embed-text vectors. This is what lets two different sentences be recognised as the same underlying mistake."},
+  piper:        {c:3,r:4, t:"Piper :8768",     s:"her voice, no cap",    f:"piper_server/server.py", d:"Runs on the CPU at roughly ten times real time, with no daily limit. One voice per language, because each Piper voice is trained on one — the price of it being instant."},
+  wav2lip:      {c:3,r:5, t:"Wav2Lip :8766",   s:"her face, on video",   f:"avatar_server/server.py", d:"Animates her photo to the audio on the GPU. One long-lived thread owns the model: the first frame batch on any thread costs a minute of kernel compilation and 0.2s after that."},
+
+  sessions:     {c:4,r:0, t:"sessions/",       s:"every turn",           f:"data/sessions/*.json", d:"One file per session, with each turn exactly as it was sent — context block included — so replaying the history stays byte-identical for prompt caching."},
+  mistakes:     {c:4,r:1, t:"mistakes.json",   s:"the deck",             f:"data/mistakes.json", d:"Your error history. A wrong entry here is drilled for weeks, which is why nothing reaches it without a verdict from the end-of-session review."},
+  cards:        {c:4,r:2, t:"cards.json",      s:"flashcards",           f:"data/cards.json", d:"One card per mistake and per new word, each with its own ease, interval and due date."},
+  profile:      {c:4,r:3, t:"profile.json",    s:"levels & plan",        f:"data/profile.json", d:"Your CEFR estimates, focus areas and the plan for next time. Only a session with enough evidence behind it may change the levels."},
+  embeddings:   {c:4,r:4, t:"embeddings",      s:"mistake vectors",      f:"data/mistake-embeddings.json", d:"A vector per mistake, so a new error can be compared against everything you have got wrong before."},
+  speechCache:  {c:4,r:5, t:"speech-cache/",   s:"clips and videos",     f:"data/speech-cache/", d:"Rendered audio and video, keyed on the words plus the voice plus the face. Capped, oldest-used first."},
+  recordings:   {c:4,r:6, t:"recordings/",     s:"last 20 clips",        f:"data/recordings/", d:"Your recent speech with what was made of it. Never committed — data/ is gitignored."},
+  settingsJson: {c:4,r:7, t:"settings.json",   s:"your choices",         f:"data/settings.json", d:"Which model does each job, which voice, which avatar and photo, and how hands-free listening behaves."}
+};
+
+var FLOWS = [
+  { name:"A spoken turn", color:"var(--route)", steps:[
+    ["mic","tutorPage","speech detected, silence ends the turn"],
+    ["tutorPage","apiTranscribe","16 kHz mono WAV + when you were talking"],
+    ["apiTranscribe","whisper","the audio"],
+    ["whisper","apiTranscribe","French or English only, never a third language"],
+    ["apiTranscribe","recLib","keep this clip"],
+    ["recLib","recordings","written, oldest pruned"],
+    ["apiTranscribe","tutorPage","text + words per minute + what it was heard as"],
+    ["tutorPage","apiTutor","the sentence you said"],
+    ["apiTutor","learner","what has he got wrong before?"],
+    ["learner","ollama","embed what he just said"],
+    ["ollama","learner","a vector"],
+    ["learner","embeddings","compare against every past mistake"],
+    ["learner","mistakes","5 most frequent, 3 most similar"],
+    ["learner","apiTutor","the ones worth her attention now"],
+    ["apiTutor","brain","history + that context block"],
+    ["brain","claude","system prompt, replayed turns, schema"],
+    ["claude","brain","corrections, speech, vocabulary"],
+    ["brain","apiTutor","her reply, validated against the schema"],
+    ["apiTutor","store","save both turns"],
+    ["store","sessions","flushed, then swapped in"],
+    ["apiTutor","learner","the vocabulary only"],
+    ["learner","cards","new words become cards"],
+    ["apiTutor","tutorPage","corrections shown, but NOT filed yet"],
+    ["tutorPage","apiAvatar","her speech, tagged fr and en"],
+    ["apiAvatar","ttsCache","has she said this before?"],
+    ["ttsCache","speech","no — synthesise it"],
+    ["speech","piper","French voice for French, English for English"],
+    ["piper","speech","one WAV, sample rates reconciled"],
+    ["apiAvatar","wav2lip","that WAV + her photo"],
+    ["wav2lip","apiAvatar","an mp4 with her mouth moving"],
+    ["apiAvatar","speechCache","keep both, hashed on the words"],
+    ["apiAvatar","player","one mp4"],
+    ["player","tutorPage","she speaks; you can talk over her"]
+  ]},
+  { name:"Ending a session", color:"var(--domain)", steps:[
+    ["tutorPage","apiEnd","end this session"],
+    ["apiEnd","store","read the whole thing back"],
+    ["store","sessions","every turn, with its context"],
+    ["apiEnd","brain","the transcript and the profile"],
+    ["brain","claude","review it, and rule on every correction"],
+    ["claude","brain","confirmed / amended / wrong, one per correction"],
+    ["brain","apiEnd","the review"],
+    ["apiEnd","learner","only the confirmed and amended ones"],
+    ["learner","ollama","embed each"],
+    ["ollama","learner","vectors"],
+    ["learner","embeddings","is this the same mistake as one already here?"],
+    ["learner","mistakes","new entry, or count + 1 on a repeat"],
+    ["learner","srs","a card for each genuinely new mistake"],
+    ["srs","cards","due now, then at growing intervals"],
+    ["apiEnd","store","the level, only if 150 words over 4 turns"],
+    ["store","profile","levels, focus areas, next session plan"],
+    ["apiEnd","tutorPage","summary, strengths, what to work on"]
+  ]},
+  { name:"Practising a card", color:"var(--data)", steps:[
+    ["practicePage","apiPractice","what is due?"],
+    ["apiPractice","store","read the deck"],
+    ["store","cards","every card with its due date"],
+    ["apiPractice","practicePage","the ones due now"],
+    ["practicePage","apiPractice","you graded it: good"],
+    ["apiPractice","srs","SM-2"],
+    ["srs","store","new ease and interval"],
+    ["store","cards","next due date written"],
+    ["apiPractice","practicePage","when it comes back"]
+  ]},
+  { name:"A written quiz", color:"var(--engine)", steps:[
+    ["practicePage","apiQuiz","make me a quiz"],
+    ["apiQuiz","store","read the evidence"],
+    ["store","mistakes","what he keeps getting wrong"],
+    ["store","cards","the vocabulary he has met"],
+    ["apiQuiz","brain","profile + mistakes + vocabulary"],
+    ["brain","gemini","write accurate questions, as JSON"],
+    ["gemini","brain","questions"],
+    ["brain","apiQuiz","only the ones that validate"],
+    ["apiQuiz","practicePage","the quiz"]
+  ]},
+  { name:"Asking the coach", color:"var(--browser)", steps:[
+    ["progressPage","apiCoach","how am I actually doing?"],
+    ["apiCoach","store","read everything about him"],
+    ["store","profile","levels and plan"],
+    ["store","sessions","every past review"],
+    ["store","mistakes","the whole history"],
+    ["apiCoach","brain","one evidence block + the conversation"],
+    ["brain","claude","answer from that evidence and nothing else"],
+    ["claude","brain","the answer, and maybe a quiz topic"],
+    ["brain","apiCoach","validated"],
+    ["apiCoach","progressPage","the answer, in English"]
+  ]},
+  { name:"Changing her photo", color:"var(--engine)", steps:[
+    ["settingsPage","apiFace","a new portrait"],
+    ["apiFace","wav2lip","find a face in this"],
+    ["wav2lip","apiFace","found it — measured and kept"],
+    ["apiFace","settingsPage","added, and selected for you"],
+    ["settingsPage","apiSettings","remember that choice"],
+    ["apiSettings","store","save"],
+    ["store","settingsJson","avatar.photo"]
+  ]}
+];
+
+var svgNS = "http://www.w3.org/2000/svg";
+function el(n, a){ var e = document.createElementNS(svgNS, n); for (var k in a) e.setAttribute(k, a[k]); return e; }
+function box(id){ var n = NODES[id]; return {x:COLS[n.c].x, y:TOP + n.r*PITCH, w:W, h:H}; }
+
+var gBands = document.getElementById("bands"), gHeads = document.getElementById("heads");
+var gEdges = document.getElementById("edges"), gNodes = document.getElementById("nodes");
+var gPackets = document.getElementById("packets");
+var nodeEls = {};
+
+(function build(){
+  var maxR = [];
+  for (var id in NODES){ var n = NODES[id]; maxR[n.c] = Math.max(maxR[n.c]||0, n.r); }
+  COLS.forEach(function(c, i){
+    var h = (maxR[i]+1)*PITCH - (PITCH-H) + 34;
+    gBands.appendChild(el("rect", {x:c.x-14, y:TOP-40, width:W+28, height:h, rx:14, class:"band"}));
+    var t = el("text", {x:c.x, y:TOP-52, class:"colhead"});
+    t.textContent = c.label;
+    gHeads.appendChild(t);
+  });
+  for (var id2 in NODES){
+    (function(id){
+      var n = NODES[id], b = box(id), color = "var(--"+COLS[n.c].kind+")";
+      var g = el("g", {class:"node", tabindex:"0", role:"button"});
+      g.appendChild(el("rect", {class:"pulse", x:b.x, y:b.y, width:b.w, height:b.h, rx:9, fill:color}));
+      g.appendChild(el("rect", {class:"body", x:b.x, y:b.y, width:b.w, height:b.h, rx:9,
+        fill:color, "fill-opacity":"0.14", stroke:color, "stroke-width":"1"}));
+      var t1 = el("text", {x:b.x+14, y:b.y+23, fill:"var(--text)", "font-size":"13.5"});
+      t1.textContent = n.t;
+      var t2 = el("text", {x:b.x+14, y:b.y+40, fill:"var(--muted)", "font-size":"11.5"});
+      t2.textContent = n.s;
+      g.appendChild(t1); g.appendChild(t2);
+      g.addEventListener("click", function(){ showDetail(id); });
+      g.addEventListener("keydown", function(e){ if (e.key==="Enter"||e.key===" "){ e.preventDefault(); showDetail(id);} });
+      gNodes.appendChild(g);
+      nodeEls[id] = g;
+    })(id2);
+  }
+})();
+
+function pathFor(from, to){
+  var A = box(from), B = box(to);
+  if (NODES[from].c === NODES[to].c){
+    var x = A.x + A.w, y1 = A.y + A.h/2, y2 = B.y + B.h/2, k = 54;
+    return "M "+x+" "+y1+" C "+(x+k)+" "+y1+", "+(x+k)+" "+y2+", "+x+" "+y2;
+  }
+  var fwd = NODES[to].c > NODES[from].c;
+  var sx = fwd ? A.x + A.w : A.x;
+  var tx = fwd ? B.x : B.x + B.w;
+  var sy = A.y + A.h/2, ty = B.y + B.h/2;
+  var dx = Math.abs(tx - sx) * 0.42 * (fwd ? 1 : -1);
+  return "M "+sx+" "+sy+" C "+(sx+dx)+" "+sy+", "+(tx-dx)+" "+ty+", "+tx+" "+ty;
+}
+
+var flowIx = 0, stepIx = -1, playing = false, speed = 1, raf = null, timer = null;
+
+var tabs = document.getElementById("tabs");
+FLOWS.forEach(function(f, i){
+  var b = document.createElement("button");
+  b.className = "tab"; b.setAttribute("role","tab");
+  b.innerHTML = '<i class="dot" style="color:'+f.color+'"></i>' + f.name + ' <span style="opacity:.55">' + f.steps.length + '</span>';
+  b.addEventListener("click", function(){ selectFlow(i); });
+  tabs.appendChild(b);
+});
+
+function participants(f){
+  var s = {};
+  f.steps.forEach(function(st){ s[st[0]] = 1; s[st[1]] = 1; });
+  return s;
+}
+
+function selectFlow(i){
+  stop();
+  flowIx = i; stepIx = -1;
+  var f = FLOWS[i];
+  [].forEach.call(tabs.children, function(c, k){ c.setAttribute("aria-selected", k===i ? "true" : "false"); });
+  var live = participants(f);
+  for (var id in nodeEls) nodeEls[id].classList.toggle("off", !live[id]);
+  document.getElementById("logtitle").textContent = f.name + " — " + f.steps.length + " steps";
+  var log = document.getElementById("log");
+  log.innerHTML = "";
+  f.steps.forEach(function(st, k){
+    var li = document.createElement("li");
+    li.innerHTML = '<b>'+(k+1)+'</b><span>'+st[2]+'<br><span class="hop">'+NODES[st[0]].t+' &rarr; '+NODES[st[1]].t+'</span></span>';
+    li.addEventListener("click", function(){ stop(); jumpTo(k); });
+    log.appendChild(li);
+  });
+  render();
+}
+
+function clearLive(){
+  if (raf) cancelAnimationFrame(raf), raf = null;
+  if (timer) clearTimeout(timer), timer = null;
+  gPackets.innerHTML = "";
+  [].forEach.call(gEdges.querySelectorAll(".live"), function(p){ p.remove(); });
+  [].forEach.call(gEdges.querySelectorAll(".elabel"), function(p){ p.remove(); });
+  for (var id in nodeEls){ nodeEls[id].classList.remove("live"); nodeEls[id].classList.remove("on"); }
+}
+
+function render(){
+  var f = FLOWS[flowIx];
+  gEdges.innerHTML = "";
+  clearLive();
+  for (var k = 0; k < stepIx; k++){
+    var st = f.steps[k];
+    gEdges.appendChild(el("path", {class:"edge past", d:pathFor(st[0], st[1])}));
+    nodeEls[st[0]].classList.add("on");
+    nodeEls[st[1]].classList.add("on");
+  }
+  document.getElementById("count").textContent = Math.max(0, stepIx+1) + " / " + f.steps.length;
+  document.getElementById("bar").style.width = (f.steps.length ? (Math.max(0,stepIx+1)/f.steps.length*100) : 0) + "%";
+  [].forEach.call(document.getElementById("log").children, function(li, k){
+    li.className = k < stepIx ? "done" : (k === stepIx ? "now" : "");
+  });
+  document.getElementById("prev").disabled = stepIx < 0;
+  document.getElementById("next").disabled = stepIx >= f.steps.length - 1;
+}
+
+function jumpTo(k){
+  stepIx = k;
+  render();
+  if (k >= 0) animateStep(k, false);
+}
+
+function animateStep(k, thenContinue){
+  var f = FLOWS[flowIx], st = f.steps[k];
+  var d = pathFor(st[0], st[1]);
+  var p = el("path", {class:"edge live", d:d, stroke:"var(--live)"});
+  gEdges.appendChild(p);
+  var len = p.getTotalLength();
+  p.style.strokeDasharray = len; p.style.strokeDashoffset = len;
+
+  var halo = el("circle", {class:"packet-halo", r:9});
+  var dot = el("circle", {class:"packet", r:4.5});
+  gPackets.appendChild(halo); gPackets.appendChild(dot);
+
+  var mid = p.getPointAtLength(len/2);
+  var lab = el("text", {class:"elabel", x:mid.x, y:mid.y - 11, "text-anchor":"middle"});
+  lab.textContent = st[2];
+  gEdges.appendChild(lab);
+
+  nodeEls[st[0]].classList.add("on","live");
+  nodeEls[st[1]].classList.add("on");
+
+  var dur = 900 / speed, t0 = null;
+  function frame(ts){
+    if (t0 === null) t0 = ts;
+    var u = Math.min(1, (ts - t0) / dur);
+    var e = u < 0.5 ? 2*u*u : 1 - Math.pow(-2*u+2, 2)/2;
+    p.style.strokeDashoffset = len * (1 - e);
+    var pt = p.getPointAtLength(len * e);
+    halo.setAttribute("cx", pt.x); halo.setAttribute("cy", pt.y);
+    dot.setAttribute("cx", pt.x); dot.setAttribute("cy", pt.y);
+    if (u < 1){ raf = requestAnimationFrame(frame); return; }
+    raf = null;
+    nodeEls[st[0]].classList.remove("live");
+    nodeEls[st[1]].classList.add("live");
+    halo.remove(); dot.remove();
+    if (thenContinue && playing){
+      timer = setTimeout(function(){
+        nodeEls[st[1]].classList.remove("live");
+        if (stepIx >= f.steps.length - 1){ stop(); return; }
+        stepIx++; render(); animateStep(stepIx, true);
+      }, 420 / speed);
+    }
+  }
+  raf = requestAnimationFrame(frame);
+}
+
+function play(){
+  var f = FLOWS[flowIx];
+  if (stepIx >= f.steps.length - 1) stepIx = -1;
+  playing = true;
+  document.getElementById("play").textContent = "Pause";
+  stepIx++; render(); animateStep(stepIx, true);
+}
+function stop(){
+  playing = false;
+  document.getElementById("play").textContent = "Play";
+  if (raf) cancelAnimationFrame(raf), raf = null;
+  if (timer) clearTimeout(timer), timer = null;
+}
+
+document.getElementById("play").addEventListener("click", function(){ playing ? stop() : play(); });
+document.getElementById("next").addEventListener("click", function(){
+  stop();
+  if (stepIx < FLOWS[flowIx].steps.length - 1){ stepIx++; render(); animateStep(stepIx, false); }
+});
+document.getElementById("prev").addEventListener("click", function(){
+  stop();
+  if (stepIx >= 0){ stepIx--; render(); if (stepIx >= 0) animateStep(stepIx, false); }
+});
+document.getElementById("restart").addEventListener("click", function(){ stop(); stepIx = -1; render(); });
+document.getElementById("speed").addEventListener("input", function(e){ speed = parseFloat(e.target.value); });
+
+function showDetail(id){
+  var n = NODES[id], color = "var(--"+COLS[n.c].kind+")";
+  var d = document.getElementById("detail");
+  d.className = "detail";
+  d.innerHTML = '<div class="tag" style="color:'+color+'">'+COLS[n.c].label+'</div>'
+    + '<h3>'+n.t+'</h3><code>'+n.f+'</code><p>'+n.d+'</p>';
+}
+
+document.getElementById("theme").addEventListener("click", function(){
+  var light = document.documentElement.getAttribute("data-theme") === "light";
+  document.documentElement.setAttribute("data-theme", light ? "dark" : "light");
+  this.textContent = light ? "Light" : "Dark";
+});
+
+document.addEventListener("keydown", function(e){
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === " "){ e.preventDefault(); playing ? stop() : play(); }
+  if (e.key === "ArrowRight") document.getElementById("next").click();
+  if (e.key === "ArrowLeft") document.getElementById("prev").click();
+});
+
+selectFlow(0);
+})();
+</script>
+</body>
+</html>

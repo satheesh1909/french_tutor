@@ -2,21 +2,31 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AVATAR_MODE_LABELS,
+  AVATAR_MODES,
   BRAIN_JOBS,
   EFFORTS,
   END_SILENCE_RANGE,
   FEATURE_LABELS,
   GEMINI_VOICES,
   JOB_LABELS,
+  KEY_LABELS,
+  KEY_PROVIDERS,
   MIC_SENSITIVITIES,
   nearestEffort,
   PROVIDERS,
   PROVIDER_LABELS,
+  SPEECH_SPEED_RANGE,
   USAGE_PROVIDER_LABELS,
+  VOICE_REGISTERS,
+  voiceRegister,
   type AppSettings,
+  type AvatarSettings,
   type BrainJob,
   type ConversationSettings,
   type Effort,
+  type KeyProvider,
+  type KeyStatus,
   type MicSensitivity,
   type ModelChoice,
   type Provider,
@@ -26,6 +36,7 @@ import {
   type UsageReport,
   type UsageRow,
   type UsageTotals,
+  type VoiceRegister,
   type VoiceSettings,
 } from "@/lib/types";
 import { api, errorMessage } from "./api";
@@ -74,17 +85,19 @@ export function SettingsApp() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [savedJson, setSavedJson] = useState("");
   const [options, setOptions] = useState<SettingsOptions | null>(null);
+  const [keys, setKeys] = useState<Record<KeyProvider, KeyStatus> | null>(null);
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
-      .get<{ settings: AppSettings; options: SettingsOptions }>("/api/settings")
+      .get<Required<SettingsResponse>>("/api/settings")
       .then((r) => {
         setSettings(r.settings);
         setSavedJson(JSON.stringify(r.settings));
         setOptions(r.options);
+        setKeys(r.keys);
       })
       .catch((e) => setError(errorMessage(e)));
   }, []);
@@ -99,9 +112,10 @@ export function SettingsApp() {
     setSaving(true);
     setError(null);
     try {
-      const r = await api.put<{ settings: AppSettings }>("/api/settings", settings);
+      const r = await api.put<SettingsResponse>("/api/settings", settings);
       setSettings(r.settings);
       setSavedJson(JSON.stringify(r.settings));
+      setKeys(r.keys);
       setJustSaved(true);
     } catch (e) {
       setError(errorMessage(e));
@@ -110,7 +124,7 @@ export function SettingsApp() {
     }
   };
 
-  if (!settings || !options) {
+  if (!settings || !options || !keys) {
     return error ? <div className="alert">{error}</div> : <p className="muted">Loading settings and available models…</p>;
   }
 
@@ -124,7 +138,22 @@ export function SettingsApp() {
         <p className="muted">Choose which AI does each job and how your tutor sounds, and see how many tokens you&apos;ve used.</p>
       </header>
 
-      <Connections options={options} />
+      <Connections
+        options={options}
+        keys={keys}
+        onKeysSaved={(r) => {
+          setKeys(r.keys);
+          // A new key means new model lists. Don't discard edits that haven't been saved yet.
+          if (JSON.stringify(settings) === savedJson) {
+            setSettings(r.settings);
+            setSavedJson(JSON.stringify(r.settings));
+          }
+          api
+            .get<Required<SettingsResponse>>("/api/settings")
+            .then((fresh) => setOptions(fresh.options))
+            .catch(() => undefined);
+        }}
+      />
 
       <section className="panel">
         <h2 className="section-title">AI models</h2>
@@ -179,6 +208,8 @@ export function SettingsApp() {
 
       <VoicePanel voice={settings.voice} options={options} onChange={(voice) => update((s) => ({ ...s, voice }))} />
 
+      <AvatarPanel avatar={settings.avatar} onChange={(avatar) => update((s) => ({ ...s, avatar }))} />
+
       <UsagePanel />
 
       {error && <div className="alert">{error}</div>}
@@ -201,26 +232,41 @@ export function SettingsApp() {
   );
 }
 
-function Connections({ options }: { options: SettingsOptions }) {
+interface SettingsResponse {
+  settings: AppSettings;
+  keys: Record<KeyProvider, KeyStatus>;
+  keyTests?: Partial<Record<KeyProvider, string | null>>;
+  options?: SettingsOptions;
+}
+
+function Connections({
+  options,
+  keys,
+  onKeysSaved,
+}: {
+  options: SettingsOptions;
+  keys: Record<KeyProvider, KeyStatus>;
+  onKeysSaved: (r: SettingsResponse) => void;
+}) {
   const items = [
     {
       name: "Claude",
       ok: options.claude.connected,
-      detail: options.claude.connected ? `${options.claude.models.length} models available` : "Add ANTHROPIC_API_KEY to .env.local",
+      detail: options.claude.connected ? `${options.claude.models.length} models available` : "Add a key below to use Claude",
     },
     {
       name: "Gemini",
       ok: options.gemini.connected,
       detail: options.gemini.connected
         ? `${options.gemini.text.length} text, ${options.gemini.tts.length} voice and ${options.gemini.transcribe.length} transcription models`
-        : "Add GEMINI_API_KEY to .env.local",
+        : "Add a key below for her voice, her ears and quizzes",
     },
     {
       name: "Local (Ollama)",
       ok: options.ollama.online,
       detail: options.ollama.online
         ? `${options.ollama.chat.length} chat and ${options.ollama.embedding.length} embedding models installed`
-        : "Start Ollama to use local models",
+        : "Start Ollama to use local models (no key needed)",
     },
   ];
   return (
@@ -233,16 +279,171 @@ function Connections({ options }: { options: SettingsOptions }) {
             <div>
               <strong>{i.name}</strong>
               <span className="small muted">
-                {i.ok ? "Connected" : "Not connected"} · {i.detail}
+                {i.ok ? "Connected" : "Not connected"} &middot; {i.detail}
               </span>
             </div>
           </li>
         ))}
       </ul>
+
+      <h3 className="subhead">API keys</h3>
+      <div className="keys">
+        {KEY_PROVIDERS.map((provider) => (
+          <KeyRow key={provider} provider={provider} status={keys[provider]} onSaved={onKeysSaved} />
+        ))}
+        <ClaudeWorkspace onSaved={onKeysSaved} />
+      </div>
       <p className="small muted">
-        API keys live in <code>.env.local</code> and are never shown here. Restart the app after changing them.
+        A key saved here is kept in <code>data/secrets.json</code> on this computer, is never shown again, and goes nowhere except to Anthropic or
+        Google. It works immediately, with no restart. Keys in <code>.env.local</code> still work too, and a key saved here overrides them.
       </p>
     </section>
+  );
+}
+
+/**
+ * A Claude key made for a whole organisation isn't tied to one workspace, and Anthropic then refuses
+ * any request that doesn't name one. A key made inside a workspace carries it already, so most people
+ * leave this empty — which is why it sits below the keys rather than beside them.
+ */
+function ClaudeWorkspace({ onSaved }: { onSaved: (r: SettingsResponse) => void }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const send = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.put<SettingsResponse>("/api/settings", { keys: { claudeWorkspace: value.trim() } });
+      setResult({ ok: true, message: value.trim() ? "Saved. Try her again." : "Cleared." });
+      onSaved(r);
+    } catch (e) {
+      setResult({ ok: false, message: errorMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="key">
+      <div className="key__top">
+        <strong>Claude workspace ID</strong>
+        <span className="small muted">Only for an organisation key</span>
+      </div>
+      <div className="row">
+        <input
+          className="input"
+          type="text"
+          value={value}
+          placeholder="wrkspc_..."
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void send();
+          }}
+        />
+        <button type="button" className="btn" disabled={busy} onClick={() => void send()}>
+          {busy ? "Saving..." : "Save"}
+        </button>
+      </div>
+      {result ? <p className={`small ${result.ok ? "key__ok" : "key__bad"}`}>{result.message}</p> : null}
+      <span className="small muted">
+        Leave this empty unless Claude complains that your key &ldquo;is not scoped to a workspace&rdquo;. The ID is in the address bar when you
+        open the workspace at console.anthropic.com. Saving an empty box clears it.
+      </span>
+    </div>
+  );
+}
+
+function KeyRow({ provider, status, onSaved }: { provider: KeyProvider; status: KeyStatus; onSaved: (r: SettingsResponse) => void }) {
+  const label = KEY_LABELS[provider];
+  const [value, setValue] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const send = async (key: string) => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.put<SettingsResponse>("/api/settings", { keys: { [provider]: key } });
+      setValue("");
+      setEditing(false);
+      const failure = r.keyTests?.[provider];
+      setResult(
+        key === "" ? { ok: true, message: "Key removed." } : failure ? { ok: false, message: failure } : { ok: true, message: "Saved, and it works." },
+      );
+      onSaved(r);
+    } catch (e) {
+      setResult({ ok: false, message: errorMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saved = status.source === "app";
+  const fromEnv = status.source === "environment";
+
+  return (
+    <div className="key">
+      <div className="key__top">
+        <strong>{label.title}</strong>
+        <span className="small muted">
+          {saved ? `Saved in the app, ending ${status.hint}` : fromEnv ? `From .env.local, ending ${status.hint}` : "No key yet"}
+        </span>
+      </div>
+      {editing || status.source === "none" ? (
+        <div className="row">
+          <input
+            className="input"
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && value.trim()) void send(value.trim());
+            }}
+            placeholder={provider === "claude" ? "sk-ant-..." : "Paste your Gemini key"}
+            aria-label={`${label.title} API key`}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button className="btn btn--primary" disabled={busy || !value.trim()} onClick={() => void send(value.trim())}>
+            {busy ? "Checking..." : "Save key"}
+          </button>
+          {editing && (
+            <button
+              className="btn btn--ghost"
+              disabled={busy}
+              onClick={() => {
+                setEditing(false);
+                setValue("");
+              }}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="row">
+          <button className="btn" disabled={busy} onClick={() => setEditing(true)}>
+            {saved ? "Replace key" : "Save a key here instead"}
+          </button>
+          {saved && (
+            <button className="btn btn--ghost" disabled={busy} onClick={() => void send("")}>
+              Remove
+            </button>
+          )}
+        </div>
+      )}
+      <p className="small muted">
+        Get one from{" "}
+        <a href={label.url} target="_blank" rel="noreferrer">
+          {label.where}
+        </a>
+        .
+      </p>
+      {result && <p className={`small ${result.ok ? "key__ok" : "key__bad"}`}>{result.message}</p>}
+    </div>
   );
 }
 
@@ -457,6 +658,38 @@ function ConversationPanel({ value, onChange }: { value: ConversationSettings; o
           hear herself; turn this off if she keeps stopping mid-sentence.
         </span>
       </label>
+      <h3>Keeping up with you</h3>
+      <p className="small">
+        Three ways of shortening the wait before she answers. The Progress page records how long turns actually take, so turning one of these off and
+        speaking a few turns shows what it was worth rather than leaving it to impression.
+      </p>
+      <label className="switch">
+        <input type="checkbox" checked={value.earlyTranscribe} disabled={!value.handsFree} onChange={(e) => set({ earlyTranscribe: e.target.checked })} />
+        <span>
+          <strong>Start listening the moment I pause:</strong> transcription begins a quarter of a second into your pause instead of waiting for the
+          pause to prove your turn is over, so by the time it is, most of the work is done. It is the same recording either way, so what she hears you
+          say is unchanged.
+        </span>
+      </label>
+      <label className="switch">
+        <input
+          type="checkbox"
+          checked={value.adaptivePause}
+          disabled={!value.handsFree || !value.earlyTranscribe}
+          onChange={(e) => set({ adaptivePause: e.target.checked })}
+        />
+        <span>
+          <strong>Fit the pause to the sentence:</strong> a finished sentence is sent sooner than the pause above, and one that trails off mid-thought
+          is given longer. On a long answer the words arrive too late to help and the pause above is used as it stands.
+        </span>
+      </label>
+      <label className="switch">
+        <input type="checkbox" checked={value.thinkingSound} onChange={(e) => set({ thinkingSound: e.target.checked })} />
+        <span>
+          <strong>Let her think out loud:</strong> a short &ldquo;mmh&rdquo; in her own voice while she works out an answer, the way a person fills a
+          gap, instead of silence. It is skipped whenever the reply arrives quickly.
+        </span>
+      </label>
     </section>
   );
 }
@@ -485,9 +718,8 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
   const english = byLocale("en", "en-gb");
   const french = byLocale("fr", "fr-fr");
 
-  /** Plays the sample in one voice. Passing a voice name tries it without selecting it. */
-  const togglePreview = async (geminiVoice?: string) => {
-    const key = geminiVoice ?? "current";
+  /** Plays the sample. An override tries a voice without selecting it. */
+  const togglePreview = async (key = "current", override?: Partial<VoiceSettings>) => {
     const wasPlaying = playing;
     player.current?.abort();
     player.current = null;
@@ -498,7 +730,7 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
     player.current = controller;
     setPlaying(key);
     try {
-      await speak(PREVIEW, geminiVoice ? { ...voice, provider: "gemini", geminiVoice } : voice, { current: 0 }, controller.signal);
+      await speak(PREVIEW, override ? { ...voice, ...override } : voice, { current: 0 }, controller.signal);
     } finally {
       if (player.current === controller) {
         player.current = null;
@@ -515,6 +747,19 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
           <strong>Gemini voice</strong>
           <span>Natural. British accent in English, native accent in French. Uses Gemini tokens.</span>
         </button>
+        <button role="radio" aria-checked={voice.provider === "piper"} className="choice" onClick={() => set({ provider: "piper" })}>
+          <strong>Local, instant</strong>
+          <span>
+            Piper on your CPU: free, unlimited, and ready in about a second. A native French voice, and a separate English one for the
+            explanations.
+          </span>
+        </button>
+        <button role="radio" aria-checked={voice.provider === "xtts"} className="choice" onClick={() => set({ provider: "xtts" })}>
+          <strong>Local, one voice</strong>
+          <span>
+            XTTS on your GPU: the same voice for both languages, but it needs about twenty seconds to prepare a reply on this machine.
+          </span>
+        </button>
         <button role="radio" aria-checked={voice.provider === "browser"} className="choice" onClick={() => set({ provider: "browser" })}>
           <strong>Browser voice</strong>
           <span>Free and instant, using voices installed on this computer. Sounds more robotic.</span>
@@ -525,30 +770,43 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
         <>
           <div className="field">
             <span>Voice — press play to hear one before choosing it</span>
-            <div className="voice-grid" role="radiogroup" aria-label="Gemini voice">
-              {GEMINI_VOICES.map((v) => (
-                <div key={v.name} className={`voice-option${voice.geminiVoice === v.name ? " voice-option--active" : ""}`}>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={voice.geminiVoice === v.name}
-                    className="voice-option__pick"
-                    onClick={() => set({ geminiVoice: v.name })}
-                  >
-                    <strong>{v.name}</strong>
-                    <span>{v.style}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="voice-option__play"
-                    aria-label={playing === v.name ? `Stop ${v.name}` : `Hear ${v.name}`}
-                    onClick={() => void togglePreview(v.name)}
-                  >
-                    {playing === v.name ? "■" : "▶"}
-                  </button>
+            {(["higher", "lower"] as VoiceRegister[]).map((register) => (
+              <div key={register}>
+                <p className="voice-group">
+                  {VOICE_REGISTERS[register].label} <span className="muted">({VOICE_REGISTERS[register].hint})</span>
+                </p>
+                <div className="voice-grid" role="radiogroup" aria-label={`${VOICE_REGISTERS[register].label} Gemini voices`}>
+                  {GEMINI_VOICES.filter((v) => voiceRegister(v.hz) === register).map((v) => (
+                    <div key={v.name} className={`voice-option${voice.geminiVoice === v.name ? " voice-option--active" : ""}`}>
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={voice.geminiVoice === v.name}
+                        className="voice-option__pick"
+                        onClick={() => set({ geminiVoice: v.name })}
+                      >
+                        <strong>{v.name}</strong>
+                        <span>
+                          {v.style} · {v.hz} Hz
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="voice-option__play"
+                        aria-label={playing === v.name ? `Stop ${v.name}` : `Hear ${v.name}`}
+                        onClick={() => void togglePreview(v.name, { provider: "gemini", geminiVoice: v.name })}
+                      >
+                        {playing === v.name ? "■" : "▶"}
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
+            <span className="small muted">
+              Google doesn&apos;t publish a gender for these voices, so each one here is grouped by the pitch we measured from a sample of it. Whichever
+              you choose, she is asked to speak British English and native-sounding French.
+            </span>
           </div>
           <label className="field">
             <span>Voice model</span>
@@ -564,6 +822,10 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
             </select>
           </label>
         </>
+      ) : voice.provider === "piper" ? (
+        <PiperVoices voice={voice} options={options} set={set} onPreview={togglePreview} playing={playing} />
+      ) : voice.provider === "xtts" ? (
+        <XttsVoices voice={voice} options={options} set={set} />
       ) : (
         <div className="field-row">
           <label className="field">
@@ -603,6 +865,164 @@ function VoicePanel({ voice, options, onChange }: { voice: VoiceSettings; option
   );
 }
 
+/**
+ * Piper needs two voices, because each of its models knows one language. They come from the server,
+ * so the lists are empty while it is stopped; the saved choices are still shown, because stopping a
+ * server shouldn't quietly change her voice.
+ */
+function PiperVoices({
+  voice,
+  options,
+  set,
+  onPreview,
+  playing,
+}: {
+  voice: VoiceSettings;
+  options: SettingsOptions;
+  set: (patch: Partial<VoiceSettings>) => void;
+  onPreview: (key: string, override?: Partial<VoiceSettings>) => void;
+  playing: string | null;
+}) {
+  const status = options.piper.online
+    ? `Running, with ${options.piper.voices.length} voices installed.`
+    : options.piper.starting
+      ? "Starting up: the voices are loading, which takes a few seconds."
+      : options.piper.problem
+        ? options.piper.problem
+        : 'Not running. Start it with "npm run piper", or use start-tutor.cmd, which starts it for you.';
+
+  const row = (language: "fr" | "en", label: string, chosen: string, patch: (id: string) => Partial<VoiceSettings>) => {
+    const available = options.piper.voices.filter((v) => v.language.startsWith(language));
+    const missing = chosen && !available.some((v) => v.id === chosen) ? chosen : "";
+    const previewKey = `piper-${language}`;
+    const pace = language === "fr" ? voice.piperSpeedFr : voice.piperSpeedEn;
+    const setPace = (value: number) => set(language === "fr" ? { piperSpeedFr: value } : { piperSpeedEn: value });
+    return (
+      <div className="field">
+        <span>{label}</span>
+        <div className="row">
+          <select className="input" value={chosen} onChange={(e) => set(patch(e.target.value))}>
+            <option value="">Automatic{options.piper.defaults[language] ? ` (${options.piper.defaults[language]})` : ""}</option>
+            {missing ? <option value={missing}>{missing} (not on the server)</option> : null}
+            {available.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.id.replace(/^(fr_FR|en_GB)-/, "")} ({v.quality})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => onPreview(previewKey, { provider: "piper", ...patch(chosen) })}
+            disabled={!options.piper.online}
+          >
+            {playing === previewKey ? "Stop" : "Hear"}
+          </button>
+        </div>
+        <label className="field">
+          <span className="small">
+            Speaking pace <strong>{pace.toFixed(2)}&times;</strong>
+            {pace === 1 ? " (the voice's own)" : pace < 1 ? " (slower)" : " (quicker)"}
+          </span>
+          <input
+            type="range"
+            min={SPEECH_SPEED_RANGE.min}
+            max={SPEECH_SPEED_RANGE.max}
+            step={0.05}
+            value={pace}
+            onChange={(e) => setPace(Number(e.target.value))}
+          />
+        </label>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div className="field-row">
+        {row("fr", "French voice", voice.piperVoiceFr, (id) => ({ piperVoiceFr: id }))}
+        {row("en", "English voice", voice.piperVoiceEn, (id) => ({ piperVoiceEn: id }))}
+      </div>
+      <p className="small muted">
+        Press <strong>Hear</strong> after moving a pace slider to try it before saving. Slowing her down costs you almost nothing in waiting:
+        Piper speaks several times faster than real time, so a longer clip adds tens of milliseconds, not seconds.
+      </p>
+      <p className="small muted">{status}</p>
+      <p className="small muted">
+        Each Piper voice is trained on one language, so these are two different speakers: she changes voice when she breaks off to explain
+        something in English. That is the price of being instant — <strong>Local, one voice</strong> above keeps a single voice across both
+        languages, but takes about twenty seconds a reply here. To add voices, put an <code>.onnx</code> and <code>.onnx.json</code> pair into{" "}
+        <code>piper_server/voices</code> and restart the server; there are many at{" "}
+        <a href="https://huggingface.co/rhasspy/piper-voices" target="_blank" rel="noreferrer">
+          rhasspy/piper-voices
+        </a>
+        .
+      </p>
+    </>
+  );
+}
+
+/**
+ * The local voice. Its speakers come from the server, so the list is empty while it is stopped; the
+ * saved choice is still shown, because stopping the server shouldn't quietly change her voice.
+ */
+function XttsVoices({
+  voice,
+  options,
+  set,
+}: {
+  voice: VoiceSettings;
+  options: SettingsOptions;
+  set: (patch: Partial<VoiceSettings>) => void;
+}) {
+  const known = [...options.xtts.voices, ...options.xtts.speakers];
+  const missing = voice.xttsSpeaker && !known.includes(voice.xttsSpeaker) ? voice.xttsSpeaker : "";
+  const status = options.xtts.online
+    ? `Running on ${options.xtts.device ?? "this computer"}, with ${options.xtts.speakers.length} built-in speakers.`
+    : options.xtts.starting
+      ? "Starting up: the model is loading, which takes about a minute."
+      : options.xtts.problem
+        ? options.xtts.problem
+        : 'Not running. Start it with "npm run voice", or use start-tutor.cmd, which starts it for you.';
+
+  return (
+    <>
+      <label className="field">
+        <span>Voice</span>
+        <select className="input" value={voice.xttsSpeaker} onChange={(e) => set({ xttsSpeaker: e.target.value })}>
+          <option value="">Automatic{options.xtts.default ? ` (${options.xtts.default})` : ""}</option>
+          {missing ? <option value={missing}>{missing} (not on the server)</option> : null}
+          {options.xtts.voices.length > 0 ? (
+            <optgroup label="Recordings in voice_server/voices">
+              {options.xtts.voices.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
+          {options.xtts.speakers.length > 0 ? (
+            <optgroup label="Built-in speakers">
+              {options.xtts.speakers.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
+        </select>
+        <span className="small muted">{status}</span>
+      </label>
+      <p className="small muted">
+        She speaks both languages in one voice, so she stays the same person when she breaks off to explain something in English. The built-in
+        speakers are mostly English actors, so their French carries a slight accent. For a native accent, put a clear ten-second wav of a French
+        speaker into <code>voice_server/voices</code> and restart the server, then choose it here — your own voice, or a public-domain or Creative
+        Commons recording, never somebody else&apos;s without their permission.
+      </p>
+    </>
+  );
+}
+
 const fullNumber = new Intl.NumberFormat();
 const shortNumber = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 // Local models (Ollama and Whisper) share one card; they run on this computer at no cost.
@@ -623,6 +1043,221 @@ function totalFor(rows: UsageRow[], providers: UsageProvider[]): UsageTotals {
     t.calls += r.calls;
   }
   return t;
+}
+
+function AvatarPanel({ avatar, onChange }: { avatar: AvatarSettings; onChange: (a: AvatarSettings) => void }) {
+  const [url, setUrl] = useState(avatar.modelUrl);
+  const [server, setServer] = useState<{ online: boolean; starting: boolean; device: string | null; faces: string[] } | null>(null);
+  // Which of the two slow things is happening, so the wait can say what it is waiting for.
+  const [upload, setUpload] = useState<{ busy: "adding" | "removing" | null; note: string | null; problem: string | null }>({
+    busy: null,
+    note: null,
+    problem: null,
+  });
+  // Bumped after an upload so the browser refetches a photo that kept the same name.
+  const [version, setVersion] = useState(0);
+  // Which photo the Remove button is waiting to be asked about twice. Deleting one is final.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const set = (patch: Partial<AvatarSettings>) => onChange({ ...avatar, ...patch });
+
+  /**
+   * Sends the chosen file as-is. The name comes from the file's own, tidied: upload "maya.jpg" and
+   * she is called maya, upload one named the same as a photo you already have and it replaces it.
+   */
+  const choosePhoto = async (file: File) => {
+    const name = file.name.replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).toLowerCase();
+    if (!name) return setUpload({ busy: null, note: null, problem: "Give the file a name with some letters or digits in it." });
+    const replacing = server?.faces.includes(name);
+    setUpload({ busy: "adding", note: null, problem: null });
+    try {
+      const res = await fetch(`/api/avatar/face?name=${encodeURIComponent(name)}`, { method: "POST", body: file });
+      const data = (await res.json().catch(() => ({}))) as { name?: string; width?: number; height?: number; faces?: string[]; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "That photo couldn't be used.");
+      setServer((current) => (current ? { ...current, faces: data.faces ?? current.faces } : current));
+      setVersion((n) => n + 1);
+      set({ photo: data.name ?? name });
+      setUpload({
+        busy: null,
+        problem: null,
+        note: `${replacing ? "Replaced" : "Added"} ${data.name ?? name}${data.width ? ` (${data.width}x${data.height})` : ""}.`,
+      });
+    } catch (e) {
+      setUpload({ busy: null, note: null, problem: errorMessage(e) });
+    }
+  };
+
+  /** Deletes a photo for good. The server keeps the last one whatever we ask. */
+  const removePhoto = async (name: string) => {
+    setConfirming(null);
+    setUpload({ busy: "removing", note: null, problem: null });
+    try {
+      const res = await fetch(`/api/avatar/face?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+      const data = (await res.json().catch(() => ({}))) as { faces?: string[]; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "That photo couldn't be removed.");
+      const left = data.faces ?? [];
+      setServer((current) => (current ? { ...current, faces: left } : current));
+      // The one on screen has just gone, so she needs another.
+      if (!left.includes(avatar.photo) && left[0]) set({ photo: left[0] });
+      setVersion((n) => n + 1);
+      setUpload({ busy: null, problem: null, note: `Removed ${name}.` });
+    } catch (e) {
+      setUpload({ busy: null, note: null, problem: errorMessage(e) });
+    }
+  };
+
+  useEffect(() => {
+    // "still" wears a portrait too, and choosing or adding one needs this server - it is what finds
+    // the face in the picture. Only the rendering of video is particular to "photo".
+    if (avatar.mode !== "photo" && avatar.mode !== "still") return;
+    const check = () =>
+      api
+        .get<{ avatarServer: typeof server }>("/api/health")
+        .then((h) => setServer(h.avatarServer))
+        .catch(() => setServer(null));
+    void check();
+    const timer = setInterval(check, 5000);
+    return () => clearInterval(timer);
+  }, [avatar.mode]);
+
+  return (
+    <section className="panel">
+      <h2 className="section-title">Avatar</h2>
+      <div className="segmented" role="radiogroup" aria-label="Avatar">
+        {AVATAR_MODES.map((mode) => (
+          <button
+            key={mode}
+            role="radio"
+            aria-checked={avatar.mode === mode}
+            className={`seg-btn${avatar.mode === mode ? " seg-btn--on" : ""}`}
+            onClick={() => set({ mode })}
+          >
+            {AVATAR_MODE_LABELS[mode].title}
+          </button>
+        ))}
+      </div>
+      <p className="small muted">{AVATAR_MODE_LABELS[avatar.mode].description}.</p>
+
+      {(avatar.mode === "photo" || avatar.mode === "still") && (
+        <>
+          <div className="photo-row">
+            <img className="photo-row__face" src={`/api/avatar/face?name=${encodeURIComponent(avatar.photo || "charlotte")}&v=${version}`} alt="" />
+            <div>
+              <p className={`small ${server?.online ? "key__ok" : "key__bad"}`}>
+                {server?.online
+                  ? `Lip-sync server ready on the ${server.device?.toUpperCase() ?? "GPU"}.`
+                  : server?.starting
+                    ? "Lip-sync server is warming up, about a minute…"
+                    : "Lip-sync server isn't running."}
+              </p>
+              <p className="small muted">
+                {server?.online ? (
+                  <>She renders each reply on your own machine, so it costs nothing and nothing leaves this computer.</>
+                ) : (
+                  <>
+                    Start it with <code>npm run avatar</code> (or use <code>start-tutor.cmd</code>, which starts everything). Until then she still
+                    talks, but the photo stays still.
+                  </>
+                )}
+              </p>
+              {server && server.faces.length > 1 && (
+                <label className="field">
+                  <span>Photo</span>
+                  <select className="input" value={avatar.photo} onChange={(e) => set({ photo: e.target.value })}>
+                    {server.faces.map((face) => (
+                      <option key={face} value={face}>
+                        {face}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          </div>
+          <label className="field">
+            <span>Use a different photo</span>
+            <input
+              className="input"
+              type="file"
+              accept="image/jpeg,image/png"
+              disabled={upload.busy !== null || !server?.online}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = ""; // so choosing the same file twice still counts
+                if (file) void choosePhoto(file);
+              }}
+            />
+          </label>
+          {server && server.faces.length > 1 && (
+            <div className="row">
+              {confirming === avatar.photo ? (
+                <>
+                  <button className="btn btn--ghost" disabled={upload.busy !== null} onClick={() => void removePhoto(avatar.photo)}>
+                    Delete {avatar.photo} for good
+                  </button>
+                  <button className="btn" disabled={upload.busy !== null} onClick={() => setConfirming(null)}>
+                    Keep it
+                  </button>
+                </>
+              ) : (
+                <button className="btn" disabled={upload.busy !== null} onClick={() => setConfirming(avatar.photo)}>
+                  Remove {avatar.photo}
+                </button>
+              )}
+            </div>
+          )}
+          {confirming === avatar.photo && (
+            <p className="small muted">
+              The photo file goes too, and it isn&apos;t kept anywhere else. She&apos;ll wear {server?.faces.find((f) => f !== avatar.photo)} instead.
+            </p>
+          )}
+          {upload.busy === "adding" && <p className="small muted">Finding the face in that photo. It takes about fifteen seconds.</p>}
+          {upload.busy === "removing" && <p className="small muted">Removing it…</p>}
+          {upload.note && <p className="small key__ok">{upload.note}</p>}
+          {upload.problem && <p className="small key__bad">{upload.problem}</p>}
+          <p className="small muted">
+            A front-facing portrait works best, looking at the camera with the mouth clearly visible. It stays on this computer, in{" "}
+            <code>avatar_server/faces</code>. If no face can be found in it nothing is kept and the photo you had stays as it was.
+            {!server?.online && " The avatar server has to be running, since it is the part that finds the face."}
+          </p>
+        </>
+      )}
+
+      {avatar.mode === "3d" && (
+        <label className="field">
+          <span>Your own 3D head (optional)</span>
+          <div className="row">
+            <input
+              className="input"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onBlur={() => set({ modelUrl: url.trim() })}
+              placeholder="https://models.readyplayer.me/xxxxxxxx.glb"
+              aria-label="Avatar model URL"
+              spellCheck={false}
+            />
+            {avatar.modelUrl && (
+              <button
+                className="btn btn--ghost"
+                onClick={() => {
+                  setUrl("");
+                  set({ modelUrl: "" });
+                }}
+              >
+                Use the built-in head
+              </button>
+            )}
+          </div>
+          <span className="small muted">
+            Paste a link to a <code>.glb</code> head and she wears it instead. Make a realistic one free at{" "}
+            <a href="https://readyplayer.me" target="_blank" rel="noreferrer">
+              readyplayer.me
+            </a>{" "}
+            and copy its .glb link: those carry the blend shapes her lip-sync needs. The model is downloaded by your browser each time.
+          </span>
+        </label>
+      )}
+    </section>
+  );
 }
 
 function UsagePanel() {

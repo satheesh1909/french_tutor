@@ -1,14 +1,23 @@
 "use client";
 
 import { useState } from "react";
-import { checkAnswer, type AnswerResult } from "@/lib/answers";
+import { gradeAnswer, type AnswerCheck, type Slip } from "@/lib/answers";
 import { CATEGORY_LABELS, type QuizQuestion } from "@/lib/types";
 
-const RESULT_TITLES: Record<AnswerResult, string> = {
-  correct: "Correct !",
-  almost: "Almost: check the accents",
-  wrong: "Not quite",
+const RESULT_TITLES: Record<Slip, string> = {
+  none: "Not quite",
+  accents: "Almost - mind the accents",
+  spelling: "Almost - one letter out",
 };
+
+/** The expected answer with whatever was missed marked, so the eye goes straight to it. */
+function Answer({ check }: { check: AnswerCheck }) {
+  return (
+    <>
+      {check.marks.map((m, i) => (m.changed ? <mark key={i} className="miss">{m.text}</mark> : <span key={i}>{m.text}</span>))}
+    </>
+  );
+}
 
 interface Props {
   questions: QuizQuestion[];
@@ -27,7 +36,7 @@ export function QuizPlayer({ questions, listen, onNew, newLabel = "New quiz", bu
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
-  const [result, setResult] = useState<AnswerResult | null>(null);
+  const [result, setResult] = useState<AnswerCheck | null>(null);
   const [score, setScore] = useState(0);
 
   const resetQuestion = () => {
@@ -66,9 +75,9 @@ export function QuizPlayer({ questions, listen, onNew, newLabel = "New quiz", bu
 
   const q = questions[index];
   const submit = (value: string) => {
-    const r = checkAnswer(value, q.acceptedAnswers);
+    const r = gradeAnswer(value, q.acceptedAnswers);
     setResult(r);
-    if (r !== "wrong") setScore((s) => s + 1);
+    if (r.result !== "wrong") setScore((s) => s + 1);
   };
 
   return (
@@ -123,7 +132,7 @@ export function QuizPlayer({ questions, listen, onNew, newLabel = "New quiz", bu
               <button className="btn btn--primary" onClick={() => submit(answer)} disabled={!answer.trim()}>
                 Check
               </button>
-              <button className="btn btn--ghost" onClick={() => setResult("wrong")}>
+              <button className="btn btn--ghost" onClick={() => setResult(gradeAnswer("", q.acceptedAnswers))}>
                 Show answer
               </button>
             </div>
@@ -132,12 +141,14 @@ export function QuizPlayer({ questions, listen, onNew, newLabel = "New quiz", bu
       )}
 
       {result !== null && (
-        <div className={`result result--${result}`}>
-          <p className="result__title">{RESULT_TITLES[result]}</p>
+        <div className={`result result--${result.result}`}>
+          <p className="result__title">{result.result === "correct" ? "Correct !" : RESULT_TITLES[result.slip]}</p>
           <p className="result__answer" lang="fr">
-            {q.answer}
+            <span>
+              <Answer check={result} />
+            </span>
             {listen && (
-              <button className="link" onClick={() => listen(q.answer)}>
+              <button className="link" onClick={() => listen(result.matched)}>
                 Listen
               </button>
             )}
