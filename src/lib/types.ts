@@ -427,6 +427,16 @@ export interface ConversationSettings {
   sensitivity: MicSensitivity;
   /** Starting to speak while the tutor talks stops her. */
   bargeIn: boolean;
+  /**
+   * Start transcribing as soon as the student pauses, rather than once the pause has lasted long
+   * enough to end their turn. The recording sent is the same one either way, so what comes back is
+   * the same too; it simply arrives sooner. Carrying on talking wastes the work and nothing else.
+   */
+  earlyTranscribe: boolean;
+  /** Let the pause that ends a turn shorten after a finished sentence and lengthen mid-thought. */
+  adaptivePause: boolean;
+  /** Make a small sound while thinking, the way a person does, instead of waiting in silence. */
+  thinkingSound: boolean;
 }
 
 /**
@@ -436,6 +446,44 @@ export interface ConversationSettings {
  * is what stops an ordinary mid-sentence breath from sending half a thought.
  */
 export const END_SILENCE_RANGE = { min: 500, max: 4000, default: 900 };
+
+/**
+ * How long one spoken turn took, stage by stage, measured in the browser.
+ *
+ * The point of reference throughout is the moment the turn ended - when the listener decided the
+ * student had finished - because that is the instant they start waiting. Everything before it is
+ * their own speech and costs them nothing; everything after it is silence they have to sit through.
+ *
+ * It exists because the wait was once argued about from guesses. A reply that feels slow and a reply
+ * that is slow are different problems with different fixes, and only recorded numbers tell them
+ * apart: a slow transcription and a slow model look identical from the sofa.
+ */
+export interface TurnTiming {
+  at: string;
+  sessionId: string;
+  /** How long the student spoke, so a slow turn can be read against how much there was to hear. */
+  audioSec: number;
+  /** Silence waited before the turn was declared over. */
+  endpointMs: number;
+  /** Transcription still owed at that point. Near zero when it ran alongside the speech. */
+  transcribeMs: number;
+  /** Turn end until her first finished sentence exists. Mostly the model, and mostly unavoidable. */
+  brainMs: number;
+  /** That sentence turned into audio. */
+  voiceMs: number;
+  /** Turn end until any sound at all, a thinking noise included. */
+  firstSoundMs: number;
+  /** Turn end until her first real word. The number that decides whether this feels like a person. */
+  wordsMs: number;
+  /** Whether transcription had been started during the pause, before the turn was official. */
+  early: boolean;
+  /** Set when the student carried on talking and the work so far was thrown away. */
+  restarted: boolean;
+  model: string;
+}
+
+/** Kept to the last few hundred turns: enough to compare a week against the week before. */
+export const TIMINGS_KEPT = 400;
 
 export const AVATAR_MODES = ["photo", "still", "3d", "portrait"] as const;
 export type AvatarMode = (typeof AVATAR_MODES)[number];

@@ -16,6 +16,7 @@ import {
   type MistakeRecord,
   type QuizQuestion,
   type SessionSummary,
+  type TurnTiming,
   type VoiceSettings,
 } from "@/lib/types";
 import { PACE_GUIDE, type FluencyAverage } from "@/lib/fluency";
@@ -110,6 +111,8 @@ export function ProgressApp() {
       <CoachPanel reviewed={data.sessions.filter((s) => s.review).length} />
 
       <SpeakingPanel speaking={data.speaking} />
+
+      <ResponsePanel />
 
       <section className="panel">
         <h2 className="section-title">Mistakes &amp; review</h2>
@@ -413,6 +416,120 @@ function Stat({ label, value, detail }: { label: string; value: number | string;
       <span>{label}</span>
       {detail && <span className="stat__detail">{detail}</span>}
     </div>
+  );
+}
+
+/** The middle value, which a single very slow turn cannot drag around the way a mean can. */
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+
+/**
+ * How long she takes to answer, and where that time goes.
+ *
+ * The wait used to be argued about from memory, which is no way to tell a slow transcription from a
+ * slow model - they feel identical. Each stage is timed in the browser from the moment the student
+ * stops talking, and shown here so a change to the pipeline can be judged instead of hoped about.
+ */
+function ResponsePanel() {
+  const [timings, setTimings] = useState<TurnTiming[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api
+      .get<{ timings: TurnTiming[] }>("/api/timing")
+      .then((d) => setTimings(d.timings))
+      .catch(() => setFailed(true));
+  }, []);
+
+  if (failed) return null; // a missing read-out is not worth an error on this page
+  if (!timings) return null;
+
+  const recent = timings.slice(-60);
+  if (recent.length === 0) {
+    return (
+      <section className="panel">
+        <h2 className="section-title">How quickly she answers</h2>
+        <p className="muted">
+          Nothing timed yet. Speak a few answers in a session and each turn is measured here, from the moment you stop talking to the moment you hear
+          her.
+        </p>
+      </section>
+    );
+  }
+
+  // "Started early" means transcription had already begun during the pause. Both kinds are kept so
+  // the two can be compared rather than taken on trust.
+  const overlapped = recent.filter((t) => t.early);
+  const plain = recent.filter((t) => !t.early);
+  const stages: [string, (t: TurnTiming) => number, string][] = [
+    ["Waiting to be sure you'd finished", (t) => t.endpointMs, "the pause at the end of your turn"],
+    ["Transcribing what you said", (t) => t.transcribeMs, "shorter when it began during your pause"],
+    ["Her writing the first sentence", (t) => t.brainMs, "the model; little of this can be removed"],
+    ["Turning it into her voice", (t) => t.voiceMs, "the voice server"],
+  ];
+  const wordsNow = median(recent.map((t) => t.wordsMs));
+  const soundNow = median(recent.map((t) => t.firstSoundMs));
+  const restarted = recent.filter((t) => t.restarted).length;
+
+  return (
+    <section className="panel">
+      <h2 className="section-title">How quickly she answers</h2>
+      <p className="small">
+        Measured from the moment you stop talking, over your last {recent.length} spoken {recent.length === 1 ? "turn" : "turns"}. Middle values, not
+        averages, so one slow turn doesn&rsquo;t distort them.
+      </p>
+      <div className="stats">
+        <Stat label="before you hear anything" value={seconds(soundNow)} detail={soundNow < wordsNow ? "a thinking noise fills this" : undefined} />
+        <Stat label="before her first word" value={seconds(wordsNow)} detail="the one that decides whether this feels like a person" />
+        <Stat label="turns measured" value={recent.length} detail={restarted ? `${restarted} restarted because you carried on` : undefined} />
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Where the time goes</th>
+            <th>Started early</th>
+            <th>Started after</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map(([label, of, note]) => (
+            <tr key={label}>
+              <td>
+                {label}
+                <br />
+                <span className="small muted">{note}</span>
+              </td>
+              <td>{overlapped.length ? seconds(median(overlapped.map(of))) : "–"}</td>
+              <td>{plain.length ? seconds(median(plain.map(of))) : "–"}</td>
+            </tr>
+          ))}
+          <tr>
+            <td>
+              <strong>Her first word</strong>
+            </td>
+            <td>
+              <strong>{overlapped.length ? seconds(median(overlapped.map((t) => t.wordsMs))) : "–"}</strong>
+            </td>
+            <td>
+              <strong>{plain.length ? seconds(median(plain.map((t) => t.wordsMs))) : "–"}</strong>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="small muted">
+        {overlapped.length && plain.length
+          ? "Both columns have turns in them, so the comparison is a real one. The switches are in Settings, under “Keeping up with you”."
+          : overlapped.length
+            ? "Every turn here started early. To compare, turn that off in Settings for a few turns."
+            : "No turn here started early yet. Turn that on in Settings to see the difference."}
+      </p>
+    </section>
   );
 }
 

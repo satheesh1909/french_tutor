@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
 import { averageFluency } from "./fluency";
-import { END_SILENCE_RANGE, SPEECH_SPEED_RANGE, type AppSettings, type Material, type KeyProvider, type KeyStatus, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type UsageTotals } from "./types";
+import { END_SILENCE_RANGE, SPEECH_SPEED_RANGE, TIMINGS_KEPT, type AppSettings, type Material, type KeyProvider, type KeyStatus, type LearnerProfile, type MistakeRecord, type ReviewCard, type Session, type SessionSummary, type TurnTiming, type UsageTotals } from "./types";
 
 // Single-user app: plain JSON files in ./data are easy to inspect, back up, and edit by hand.
 
@@ -104,7 +104,15 @@ export function defaultSettings(): AppSettings {
       browserVoiceFr: "",
     },
     avatar: { mode: "3d", modelUrl: "", photo: "charlotte" },
-    conversation: { handsFree: true, endSilenceMs: END_SILENCE_RANGE.default, sensitivity: "medium", bargeIn: true },
+    conversation: {
+      handsFree: true,
+      endSilenceMs: END_SILENCE_RANGE.default,
+      sensitivity: "medium",
+      bargeIn: true,
+      earlyTranscribe: true,
+      adaptivePause: true,
+      thinkingSound: true,
+    },
     updatedAt: "",
   };
 }
@@ -198,6 +206,17 @@ export const writeMistakes = (mistakes: MistakeRecord[]) => writeJson(file("mist
 /** Ollama embedding vectors, keyed by mistake id. Kept separate so mistake data stays readable. */
 export const readEmbeddings = () => readJson<Record<string, number[]>>(file("mistake-embeddings.json"), {});
 export const writeEmbeddings = (vectors: Record<string, number[]>) => writeJson(file("mistake-embeddings.json"), vectors);
+
+/** Stage-by-stage timings of spoken turns, newest last. See TurnTiming for what the stages mean. */
+export const readTimings = () => readJson<TurnTiming[]>(file("timings.json"), []);
+
+/** Appends one turn and drops the oldest, so the file can't grow without bound. */
+export async function recordTiming(timing: TurnTiming): Promise<void> {
+  await withLock(async () => {
+    const all = await readTimings();
+    await writeJson(file("timings.json"), [...all, timing].slice(-TIMINGS_KEPT));
+  });
+}
 
 export const readCards = () => readJson<ReviewCard[]>(file("cards.json"), []);
 export const writeCards = (cards: ReviewCard[]) => writeJson(file("cards.json"), cards);
