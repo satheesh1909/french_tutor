@@ -56,6 +56,11 @@ VERBATIM_PROMPTS = {
 }
 
 
+# How many candidate transcriptions Whisper keeps while decoding. More is slower and usually, but not
+# always, more accurate; this is a learner's hesitant speech, so it is measured rather than assumed.
+BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "5"))
+
+
 def load_model():
     if DEVICE == "auto":
         attempts = [("cuda", "float16"), ("cpu", "int8")]
@@ -136,7 +141,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(413, {"error": "The recording is too long."})
         audio = self.rfile.read(length)
         # The app may name the language; otherwise it is French or English, decided below.
-        asked = parse_qs(url.query).get("language", [None])[0] or None
+        query = parse_qs(url.query)
+        asked = query.get("language", [None])[0] or None
+        # Knobs for comparing settings against real recordings; the defaults are what the app uses.
+        try:
+            beam = max(1, min(10, int(query.get("beam", [BEAM_SIZE])[0])))
+        except ValueError:
+            beam = BEAM_SIZE
+        timed = query.get("words", ["1"])[0] != "0"
         if asked is not None and asked not in CANDIDATES:
             return self._send(400, {"error": f"Language must be one of {', '.join(CANDIDATES)}."})
 
@@ -151,10 +163,10 @@ class Handler(BaseHTTPRequestHandler):
                 segments, info = model.transcribe(
                     samples,
                     language=language,
-                    word_timestamps=True,
+                    word_timestamps=timed,
                     vad_filter=True,
                     condition_on_previous_text=False,
-                    beam_size=5,
+                    beam_size=beam,
                     initial_prompt=VERBATIM_PROMPTS[language],
                 )
                 segments = list(segments)
